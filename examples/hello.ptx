@@ -1,0 +1,23 @@
+// Handwritten PTX: an argument-free kernel prints from each launched thread.
+// Colab run examples/hello.ptx --entry main --block 4,1,1
+.version 7.0
+.target sm_75
+.address_size 64
+
+.extern .func (.param .b32 result) vprintf(.param .b64 format, .param .b64 arguments);
+.global .align 1 .b8 message[17] = {72, 101, 108, 108, 111, 32, 102, 114, 111, 109, 32, 80, 84, 88, 33, 10, 0};
+
+.visible .entry main() {
+    .reg .b64 %rd1;
+    .param .b64 format;
+    .param .b64 arguments;
+    .param .b32 result;
+
+    // vprintf takes generic pointers: the format string and a packed argument list.
+    // There are no format substitutions, so the argument list is a null pointer.
+    cvta.global.u64 %rd1, message;
+    st.param.b64 [format], %rd1;
+    st.param.b64 [arguments], 0;
+    call.uni (result), vprintf, (format, arguments);
+    ret;
+}

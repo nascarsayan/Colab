@@ -1,0 +1,29 @@
+# Rust build output
+/target/
+
+# Runtime and local workspace data
+/work/
+
+# Python caches and test tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+
+# macOS / editor noise
+.DS_Store
+.vscode/
+.idea/
+__pycache__/
+*.pyc

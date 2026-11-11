@@ -1,0 +1,277 @@
+# Colab
+
+Rust CLI for Google Colab GPU runtimes. Commands and shells share a local OpenSSH control socket, so multiple local terminals use one Colab connection. Uses Google's `google-colab-cli` 0.8.0 backend for OAuth, provisioning, file transfer, and SSH over WebSocket. No notebook worker cell, public tunnel, Google Cloud API key, or continuously running local server is needed.
+
+## Setup on a new machine
+
+Supported platforms are **macOS and Linux**. This implementation uses Unix sockets and OpenSSH; native Windows is not supported. You need internet access, a Google account with Colab access, and a browser for Google's consent screen. No local GPU, CUDA toolkit, Google Cloud project, service account, API key, or gcloud installation is required.
+
+To install from a copy of this source repository, first install a stable Rust toolchain (Cargo) and your platform's compiler/linker tools. On macOS these are the Xcode Command Line Tools (`xcode-select --install`); on Debian/Ubuntu they are provided by `build-essential`. Rust is needed to build the CLI, not to run an already-built binary. This project is not currently published as a crates.io package or a public binary download.
+
+From the directory containing `Cargo.toml`:
+
+```sh
+cargo install --path . --locked
+Colab setup
+```
+
+If the binary is not found, add Cargo's binary directory to your shell's PATH:
+
+```sh
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+`setup` checks for `ssh` and `ssh-keygen` (install `openssh-client` on Linux if missing). It installs `uv` when needed using [Astral's official installer](https://docs.astral.sh/uv/getting-started/installation/), then uses uv to install Python 3.13 and the pinned Google Colab backend. Bootstrapping uv requires `curl`. Existing compatible installations are reused. Setup does not edit your shell profiles; it also recognizes tools under `~/.local/bin` automatically.
+
+Next it generates a local SSH key if absent and opens Google's authorization page. Sign in, approve the displayed permissions, then paste the authorization code shown by Google into the terminal. Credentials are saved in the OS keyring and refreshed on subsequent commands. Setup verifies API access but **does not allocate a CPU/GPU/TPU runtime**.
+
+macOS uses Keychain. Linux needs an accessible, unlocked Secret Service keyring (for example GNOME Keyring with a desktop D-Bus session). If credentials cannot be saved, login reports that failure instead of claiming setup is complete. Sign in independently on each machine rather than copying credential or session-token files.
+
+```sh
+Colab setup --check            # check prerequisites; no installs or login
+Colab setup --skip-login       # install dependencies, defer Google consent
+Colab login                    # verify cached login or guide fresh sign-in
+Colab login --no-browser       # print the URL for a remote/headless terminal
+
+Colab create trainer --runtime t4
+Colab exec -s trainer nvidia-smi
+Colab mount-drive -s trainer    # optional; separate Google Drive consent
+```
+
+After moving to a new machine, existing Colab runtime names may not be known locally. Use `Colab sessions` to discover endpoints and `Colab attach --endpoint ENDPOINT -s NAME` to adopt one, or use `create` for a fresh independent runtime. Disconnect the old PC's shared SSH connection first if you are reusing the same runtime from another PC.
+
+## Quickstart
+
+```sh
+Colab start                  # reuse the existing T4 or provision one
+Colab exec nvidia-smi
+Colab exec 'pwd && nvcc --version'
+Colab run ./kernel.cu -- arg1 arg2
+Colab shell                  # interactive remote Bash; exit to return
+Colab status
+Colab stop                   # releases the runtime
+```
+
+`start` returns when the runtime is ready. `shell`, `exec`, and `run` also recover a missing or expired session automatically before submitting work: they adopt a matching active runtime, or provision one if none exists. Recovery retains the saved accelerator type, defaulting to T4 when no session metadata remains. Other commands work directly from any local terminal. Session metadata persists between commands. The default session name is `gpu-proxy`. Use `--session NAME` to work with another session. Create an independent runtime with `create NAME --runtime TYPE`; `start --runtime TYPE` can select hardware for a new session. `start --gpu T4` remains a legacy alias. Other GPUs depend on account entitlement and availability.
+
+```sh
+Colab sessions               # discover runtimes, including notebook runtimes
+Colab attach --endpoint ENDPOINT
+Colab url --open             # open the managed runtime in Colab
+printf 'hello\n' | Colab exec 'read x; echo "$x"'
+```
+
+The current `gpu-proxy` session is attached to the T4 originally opened from [gpu-proxy.ipynb](https://colab.research.google.com/drive/1NXDWHf_SWF2uZy6JhX-IxxlDHjylcuKk). Opening the notebook is optional for CLI operation. `start` reuses a tracked session; when none exists, it adopts the only matching unclaimed runtime, or provisions one if none matches. Runtimes already assigned to another local session name are not silently adopted. Multiple matching runtimes require an explicit endpoint. `stop` terminates the attached runtime, including when it is also being used by the notebook.
+
+## Commands and input
+
+`exec` accepts either one shell string (`exec 'echo hello | wc -c'`) or separate literal arguments (`exec printf '%s\n' 'hello world'`). stdin, stdout, stderr, and exit codes are forwarded through SSH. In an interactive terminal SSH uses a PTY, where terminal output can combine stdout/stderr. Pipe or redirect output when separate streams matter.
+
+Each `exec` starts a new remote process; changes to `cd` or `export` last only for that command. Use `shell` for a persistent interactive Bash session. `shell` supports terminal input and programs such as editors. Exiting the shell leaves the runtime allocated; release it with `stop`.
+
+`run` uploads one source file to a unique remote `/tmp` path, then compiles C/C++/CUDA with nvcc and executes it. Put program arguments after `--`. Shell scripts (`.sh`) can also be uploaded and run. Include trees and multi-file projects are not uploaded automatically.
+
+```sh
+Colab run kernel.ptx --entry main --grid 1,1,1 --block 32,1,1
+```
+
+PTX launch currently supports argument-free kernels only. Use a CUDA/C++ host wrapper for pointer/scalar kernel parameters. Grid and block require three positive dimensions.
+
+## Argument syntax and program arguments
+
+For `run`, put options understood by `Colab` before the standalone `--`, and arguments for your uploaded program after it:
+
+```text
+Colab run FILE [CLI_OPTIONS] -- [PROGRAM_ARGUMENTS]
+```
+
+The standalone `--` is a separator; it is not passed to your program. An option such as `--block` is a named CLI option, rather than the separator.
+
+```sh
+# 4096 becomes argv[1] in the compiled vector_add program.
+Colab run examples/vector_add.cu -- 4096
+
+# hello becomes the Bash script's first argument ($1).
+Colab run examples/gpu_info.sh -- hello
+
+# --block is interpreted by Colab, so no separator is needed here.
+Colab run examples/hello.ptx --block 4,1,1
+```
+
+Arguments after the separator are forwarded literally, including strings starting with `--`. For example, `Colab run my_program.cpp -- --verbose` passes `--verbose` to your program. Omit the separator when there are no program arguments.
+
+## PTX launch dimensions: grid and block
+
+A kernel is the function that GPU threads execute. `--block X,Y,Z` specifies **threads per block**, and `--grid X,Y,Z` specifies **blocks in the grid**. Every launched thread executes the kernel once. The total thread count is:
+
+```text
+(gridX × gridY × gridZ) × (blockX × blockY × blockZ)
+```
+
+Both options default to `1,1,1`. Each takes three positive, comma-separated integers. For a simple one-dimensional launch, vary X and leave Y and Z as `1`.
+
+```sh
+# One block × four threads = four messages from hello.ptx.
+Colab run examples/hello.ptx --block 4,1,1
+
+# Two blocks × four threads = eight messages.
+Colab run examples/hello.ptx --grid 2,1,1 --block 4,1,1
+```
+
+The second command corresponds to this CUDA launch syntax:
+
+```cpp
+hello<<<2, 4>>>();  // 2 blocks, 4 threads per block
+```
+
+These CLI launch options (`--entry`, `--grid`, `--block`) affect **PTX files only**. CUDA/C++ programs configure their launches inside their source code; specifying the options for those programs currently has no effect. For example, `vector_add.cu` chooses its own thread count and uses the `4096` program argument as the number of vector elements. PTX kernels currently cannot receive program arguments or kernel parameters through this CLI.
+
+## Installation and authentication
+
+```sh
+cargo install --path . --locked
+Colab setup
+```
+
+OAuth authorization is required once per Google account, or again if access is revoked. Google credentials are managed by the official CLI in the OS keyring. `Colab login` opens the browser when fresh authorization is needed and accepts Google's one-time authorization code; cached credentials are reused when valid. A dedicated local SSH key is created at `~/.config/Colab/id_ed25519` and used for runtime access. Session metadata is stored by the backend at `~/.config/colab-cli/sessions.json`. Do not share credentials or session state.
+
+This is a Rust frontend backed by Google's Python CLI; `Colab`, `ssh`, and `ssh-keygen` must be on PATH. The Google backend is invoked through its Python module, avoiding a case-insensitive executable-name collision. `uv` is used for installation; runtime management uses the installed Google backend's Python interpreter so credentials remain accessible through the same Keychain identity. Colab quotas, runtime lifetime limits, and hardware availability still apply. There is no added Google Cloud billing project or API key.
+
+## Verified behavior
+
+Version 0.2.0 was checked against the existing notebook's Tesla T4: runtime adoption and reuse, `nvidia-smi`, uploaded CUDA code returning 42, an argument-free PTX kernel, piped stdin, separate stdout/stderr, exit code 7 propagation, and an interactive Bash session. Creation of an additional GPU runtime was not exercised; provisioning uses the official CLI's `new` operation.
+
+## Concurrent commands and shells
+
+Open as many local terminals as you need. A shared OpenSSH master keeps one WebSocket/SSH transport to Colab, and each `exec`, `run`, or `shell` opens its own SSH channel over a local Unix socket. stdin, stdout/stderr, PTYs, and exit codes remain independent.
+
+```sh
+# Terminal 1
+Colab shell
+
+# Terminal 2, while the shell remains open
+Colab exec nvidia-smi
+
+# Terminal 3
+Colab run ./kernel.cu
+```
+
+The connection starts automatically on the first command. A file lock prevents duplicate master connections when commands start simultaneously. Sockets live in `~/.config/Colab/mux/`, in a directory accessible only to your account, and are keyed by runtime endpoint so session aliases share one connection. A dead master or stale socket is replaced on the next command. Before opening a new transport, the CLI checks Google for an active assignment and refreshes runtime credentials. Connection-setup failures include the backend diagnostics; only HTTP 429 is described as a competing SSH connection. Commands already submitted are never retried automatically.
+
+The master exits after ten minutes with no active command channels. `Colab disconnect` closes it immediately, terminating any active channels but leaving the GPU runtime allocated. The next command reconnects automatically. `Colab stop` closes the master and releases the runtime. Standalone Google-backend SSH connections do not use these sockets; use `Colab` consistently across terminals.
+
+This removes the single-connection conflict between CLI commands; concurrent channel counts are still bounded by the remote SSH server and the runtime's resources. Verified six simultaneous commands starting from no master, with isolated stdin, stdout/stderr and exit codes; reconnection after forcibly killed master/stale socket; and CUDA execution while an interactive shell remained open.
+
+## Sample programs
+
+See [examples/README.md](examples/README.md) for runnable CUDA, C, C++, PTX, and Bash examples, including GPU computation, device-memory transfers, and stdin/stdout/stderr forwarding.
+
+## Runtime recovery
+
+If Colab terminates a runtime, its local session record can become stale or be removed by `status`. Run `Colab shell`, `Colab exec COMMAND`, or `Colab run FILE` to recover it automatically. You can also run `Colab start` explicitly. Provisioning still depends on Google account quota and GPU availability; failures are reported before your command is submitted.
+
+A replacement runtime has a fresh filesystem. `run` uploads the specified local source again; other remote files and installed packages must be restored separately. Recovery never retries a user command that may already have started.
+
+Regression checks: `python3 -m unittest discover -s tests -v` and `cargo clippy -- -D warnings`.
+
+## Google Drive storage
+
+```sh
+Colab mount-drive
+Colab exec 'ls /content/drive/MyDrive'
+```
+
+`mount-drive` recovers the runtime if needed, then uses Colab's official `drive.mount` flow at `/content/drive`. An existing mount is reused rather than forcibly remounted. The CLI verifies that the mount and My Drive root are accessible before returning success. Your personal **My Drive** storage root is `/content/drive/MyDrive`; the enclosing mount can also expose Shared drives when available.
+
+Google may request browser consent before the mount can complete. The standard Drive filesystem integration requests broad account permissions, including permission to modify and delete Drive files; it is not a read-only mount. The CLI does not create or delete Drive files as part of mounting.
+
+Drive files persist when a Colab runtime is replaced, but the mount does not. After a successful `Colab mount-drive`, the CLI remembers that preference per session and checks/restores the mount on subsequent shell, execution, and transfer connections. Transfers targeting `/content/drive` also enable this preference. Google may require renewed browser consent on a replacement runtime; if so, the operation stops until consent is completed. Preferences are stored in `~/.config/Colab/drive/`.
+
+## Recursive copy and sync
+
+The executable is named `Colab`. All commands use the selected account, session, shared connection sockets, and settings.
+
+Prefix the remote endpoint with `colab:` and use an absolute runtime path. An unprefixed path is local. Exactly one endpoint must be remote.
+
+```sh
+# Recursive upload and download; no -r flag needed.
+Colab cp ./data colab:/content/drive/MyDrive/data
+Colab cp colab:/content/drive/MyDrive/results ./results
+
+# Preview without modifying either data tree.
+Colab cp ./data colab:/content/drive/MyDrive/data --dry-run
+
+# Sync local → remote.
+Colab sync ./data '>' colab:/content/drive/MyDrive/data
+
+# Sync remote → local (the right endpoint is the source).
+Colab sync ./data '<' colab:/content/drive/MyDrive/data
+
+# Sync both directions.
+Colab sync ./data '<>' colab:/content/drive/MyDrive/data
+
+# Preview the bidirectional plan.
+Colab sync ./data '<>' colab:/content/drive/MyDrive/data --dry-run
+```
+
+**Quote the direction symbols.** Without quotes, your shell treats `>`, `<`, and `<>` as redirection operators instead of passing them to the CLI. Keep normal filesystem paths after the `colab:` prefix; `~` expansion is only supported for local paths. A session can be selected with `--session NAME`.
+
+`cp` accepts a single file or a directory and always recurses through directories. Directory **contents merge directly into the specified destination**; an extra source-directory level is not added. A file copied to an existing directory keeps its basename. Otherwise, the destination is the exact output filename. Existing files at matching paths are replaced, but unrelated destination files are retained.
+
+`sync` operates on directory trees. One-way sync copies new or changed source files and replaces destination files at matching paths. Bidirectional sync uses a saved content-hash baseline to determine which side changed. On the first run, unique files from both sides are merged, identical files are skipped, and differing files at the same path require explicit resolution. If both sides later edit the same file differently, the entire plan is rejected before copying anything. Resolve the edits manually or deliberately choose one-way sync.
+
+**Neither copy nor sync deletes extra files.** In bidirectional sync, a file missing on one side is restored from the other side. Deletion propagation and destructive mirroring are not implemented. Files are compared using SHA-256, not timestamps. Empty directories and file executable permissions are supported; symlinks and non-regular files are rejected before copying. Owners, timestamps, ACLs, and extended attributes are not preserved.
+
+### Transfer recovery and limitations
+
+The CLI checks the Drive mount before transferring to or from `/content/drive`. If Drive is not authorized or cannot be mounted, the operation stops before transfer rather than creating files in the runtime's temporary mount directory.
+
+Each file is checksummed and written to a temporary file alongside its destination, then installed with an atomic rename. An interrupted or corrupt file never replaces an existing destination file. Optimistic checks also reject destination edits detected between planning and installation. A copy is atomic per file, not across an entire directory tree. Names beginning with `.Colab-` are reserved for staging and excluded from recursive inventories, so a partial staging file left by a forcibly killed process is never synced as user data. Simultaneous external edits can still require reconciliation; stop writers for a stable dataset snapshot.
+
+Transfers spool one file at a time through temporary storage on your PC, keeping memory bounded. Allow enough free local disk space for the largest file. This first implementation hashes complete trees and does not provide block-delta transfers or byte-level resume. After a disconnect, rerun the same sync command; completed identical files are skipped. Previously submitted shell commands are never automatically replayed.
+
+Bidirectional sync baselines and pair locks live in `~/.config/Colab/sync/`. Keep this directory to retain change history. If it is removed, the next bidirectional run applies the first-run rules. A baseline advances only after both sides have been rescanned and confirmed to match; a failed transfer does not advance it.
+
+### List recorded sync targets
+
+```sh
+Colab sync-targets                  # current session's recorded pairs
+Colab sync-targets --all-sessions   # every session
+Colab sync-targets --json           # machine-readable output
+Colab --session other sync-targets # a particular session
+```
+
+This command is local and works when Colab is disconnected. It shows each pair, the last successful direction, and the last successful sync time in UTC. Successful syncs (including one-way syncs and unchanged runs) register/update their pair automatically. Failed attempts, dry runs, and plain copies do not register successful sync targets. These are remembered one-shot sync pairs, not background synchronization jobs.
+
+Target metadata is stored next to baselines in `~/.config/Colab/sync/*.target.json`. Version 0.4.0 and earlier saved only hashed baseline filenames and content hashes, without endpoint paths, so their target names cannot be reconstructed. Rerun each older sync command once to register it for listing. Existing content baselines are retained.
+
+## Create independent named sessions
+
+```sh
+Colab create trainer --runtime t4
+Colab create preprocessing --runtime cpu
+Colab create experiments --runtime a100 --high-mem
+
+# Select the desired session on every operation (before or after the command).
+Colab shell -s trainer
+Colab exec -s preprocessing 'uname -a'
+Colab run -s trainer examples/vector_add.cu -- 4096
+Colab cp -s trainer ./data colab:/content/data
+Colab sync -s trainer ./data '>' colab:/content/data
+Colab mount-drive -s trainer
+Colab sessions
+Colab disconnect -s trainer
+Colab stop -s trainer
+```
+
+`create NAME` requires a name and always requests a **separate runtime**, even when another runtime of the same type exists. Duplicate local names are rejected; use `start -s NAME` to reuse or recover an existing session. Names may contain 1–64 ASCII letters, digits, dots, underscores, or hyphens. The default session for commands without `-s` remains `gpu-proxy`.
+
+`--runtime` accepts `cpu`, `t4`, `l4`, `g4`, `h100`, `a100`, `v5e1`, and `v6e1` (case-insensitive). `v5e-1` and `v6e-1` are accepted TPU aliases. New sessions default to `t4`. `--high-mem` requests high-RAM hardware when supported; Google's backend may ignore it for hardware with a fixed memory shape. Accelerator and high-memory availability, plus the number of concurrent sessions, depend on Google's account entitlements, quota, and capacity. This CLI cannot raise those limits.
+
+Runtime choices are saved per name in `~/.config/Colab/runtimes.json`, separately from Google's expiring assignment metadata. `start -s NAME` and automatic recovery retain the selected accelerator and memory setting even if `status` prunes an expired session. Specifying a different runtime for an active session is rejected; create a new name to use different hardware. Allocation and registry changes are serialized locally so concurrent create/recovery calls do not overwrite each other's session metadata.
+
+Drive preferences and sync histories are scoped by session name. Each independent endpoint gets its own shared SSH transport. `attach --endpoint ENDPOINT -s NAME` intentionally reuses an existing runtime; use `create` for independent resources.
+
+## Project identity
+
+The repository directory, Cargo package, and executable are named `Colab`. App-owned settings and the SSH key live under `~/.config/Colab/`. Google-owned technical identifiers (`google-colab-cli`, `colab_cli`, `~/.config/colab-cli`) and the `colab:` remote-path protocol retain their upstream names. Setup installs the backend launcher privately under `~/.config/Colab/backend/bin/` and invokes the backend through its Python module, so it does not shadow the `Colab` executable on case-insensitive filesystems.

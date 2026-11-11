@@ -1,0 +1,17 @@
+[package]
+name = "Colab"
+version = "0.7.0"
+edition = "2021"
+description = "Run CUDA and PTX jobs on a Google Colab GPU runtime from a local CLI"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "v5"] }
+fs2 = "0.4"
+serde_json = "1"
+
+[[bin]]
+name = "Colab"
+path = "src/main.rs"
