@@ -27,7 +27,7 @@ pub fn list(json: bool) -> Result<()> {
                 row["kind"].as_str().unwrap_or_default().to_uppercase()
             );
         }
-        println!("\nSupported by this CLI; account entitlement, quota, and capacity determine availability.\nCreate: Colab session create --runtime TYPE\nActive sessions: Colab session list");
+        println!("\nSupported by this CLI; account entitlement, quota, and capacity determine availability.\nCreate: Colab session create --account EMAIL --runtime TYPE\nActive sessions: Colab session list");
     }
     Ok(())
 }

@@ -83,8 +83,7 @@ where
     )
 }
 fn identity() -> Result<PathBuf> {
-    let base = std::env::var_os("HOME").context("HOME is unset")?;
-    let dir = Path::new(&base).join(".config/Colab");
+    let dir = crate::accounts::profile()?;
     std::fs::create_dir_all(&dir)?;
     let key = dir.join("id_ed25519");
     if !key.exists() {
@@ -99,6 +98,7 @@ fn identity() -> Result<PathBuf> {
     }
     Ok(key)
 }
+mod accounts;
 mod drive;
 mod runtimes;
 mod sessions;
@@ -162,7 +162,7 @@ fn backend_interpreter() -> Result<PathBuf> {
             }
         }
     }
-    bail!("Google backend not installed; run Colab setup")
+    bail!("Google backend unavailable; retry Colab to install dependencies")
 }
 const BACKEND_CLI: &str =
     "from colab_cli.cli import app\napp.pretty_exceptions_enable=False\napp(standalone_mode=False)";
@@ -174,6 +174,9 @@ fn script_command(source: &str) -> Result<Process> {
 fn backend_command() -> Result<Process> {
     let mut command = script_command(BACKEND_CLI)?;
     command.args(["--auth", "oauth2"]);
+    if std::env::var_os("COLAB_PROFILE_DIR").is_some() {
+        command.arg("--config").arg(accounts::sessions_path()?);
+    }
     Ok(command)
 }
 
@@ -188,8 +191,7 @@ fn manage(
     high_mem: Option<bool>,
 ) -> Result<()> {
     // Serialize allocation and registry updates across all local session names.
-    let home = std::env::var_os("HOME").context("HOME is unset")?;
-    let dir = Path::new(&home).join(".config/Colab");
+    let dir = crate::accounts::profile()?;
     std::fs::create_dir_all(&dir)?;
     let guard = std::fs::OpenOptions::new()
         .read(true)
@@ -246,8 +248,7 @@ fn transfer_on(
     dest: &str,
     dry_run: bool,
 ) -> Result<()> {
-    let home = std::env::var_os("HOME").context("HOME is unset")?;
-    let state = Path::new(&home).join(".config/Colab");
+    let state = crate::accounts::profile()?;
     let status = script_command(include_str!("files.py"))?
         .arg(include_str!("file_rpc.py"))
         .arg(socket)
@@ -273,12 +274,65 @@ fn main() {
 fn run() -> Result<()> {
     setup::prepare_path()?;
     let c = Cli::parse();
+    // Internal profile variables are set from the verified registry, never inherited
+    // as an implicit account selection from a parent process.
+    for key in [
+        "COLAB_ACCOUNT",
+        "COLAB_PROFILE_DIR",
+        "COLAB_LOGIN_EMAIL",
+        "COLAB_ALLOW_LOGIN",
+    ] {
+        std::env::remove_var(key);
+    }
     let command = c.command.operation();
+    if matches!(command, Command::AuthList) {
+        return accounts::list(c.account.as_deref());
+    }
+    let offline = matches!(
+        command,
+        Command::RuntimeList { .. } | Command::SyncTargets { .. }
+    );
+    let listing = matches!(
+        command,
+        Command::Sessions
+            | Command::Status
+            | Command::SyncTargets { .. }
+            | Command::RuntimeList { .. }
+    );
+    if !listing && !matches!(command, Command::Login { .. }) && c.account.is_none() {
+        bail!("--account EMAIL is required for this operation. Run Colab auth list to see saved accounts.");
+    }
+    if !offline {
+        setup::ensure()?;
+    }
+    if matches!(command, Command::Login { .. }) {
+        accounts::configure_login(c.account.as_deref())?;
+    } else if !listing {
+        accounts::select(
+            c.account
+                .as_deref()
+                .context("--account EMAIL is required")?,
+        )?;
+    }
+    if matches!(command, Command::Sessions) {
+        return accounts::sessions(c.account.as_deref(), "sessions", c.session.as_deref());
+    }
+    if matches!(command, Command::Status) {
+        return accounts::sessions(c.account.as_deref(), "status", c.session.as_deref());
+    }
+    if let Command::SyncTargets { all_sessions, json } = command {
+        return targets::list_accounts(
+            c.account.as_deref(),
+            c.session.as_deref().unwrap_or(""),
+            all_sessions || c.session.is_none(),
+            json,
+        );
+    }
     let explicit = c.session.as_deref();
     let auto_sync = !c.no_auto_sync;
-    // Selection is deliberately skipped for setup/login/listing and explicit creation.
+    // Selection is deliberately skipped for authentication/listing and explicit creation.
     let selected = match &command {
-        Command::Setup { .. }
+        Command::AuthList
         | Command::Login { .. }
         | Command::Sessions
         | Command::RuntimeList { .. }
@@ -306,11 +360,7 @@ fn run() -> Result<()> {
     };
     let s = selected.as_str();
     match command {
-        Command::Setup {
-            check,
-            skip_login,
-            no_browser,
-        } => setup::run(check, skip_login, no_browser),
+        Command::AuthList => unreachable!(),
         Command::Login { no_browser } => setup::login(no_browser),
         Command::RuntimeList { json } => runtimes::list(json),
         Command::Create {
@@ -327,7 +377,7 @@ fn run() -> Result<()> {
             let cfg = workspace::options(Some(&drive_path), local_dir.as_deref())?;
             manage("create", &name, runtime.backend(), None, Some(high_mem))?;
             workspace::save(&name, &cfg)?;
-            workspace::prepare(&name, auto_sync).with_context(||format!("Session {name} was created, but its workspace is not ready. Run Colab drive mount -s {name} to finish setup"))?;
+            workspace::prepare(&name, auto_sync).with_context(||format!("Session {name} was created, but its workspace is not ready. Run Colab drive mount --account EMAIL -s {name} to finish setup"))?;
             println!("Session {name} ready in {}", cfg.remote);
             Ok(())
         }

@@ -1,6 +1,6 @@
 [package]
 name = "Colab"
-version = "0.10.1"
+version = "0.11.0"
 edition = "2021"
 description = "Run CUDA and PTX jobs on a Google Colab GPU runtime from a local CLI"
 license = "MIT"

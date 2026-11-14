@@ -11,9 +11,9 @@ class Hierarchy(unittest.TestCase):
 
     def test_root_help_only_advertises_the_public_tree(self):
         p=self.call('--help');self.assertEqual(p.returncode,0)
-        for name in ['setup','auth','session','runtime','files','drive','exec','run']:
+        for name in ['auth','session','runtime','files','drive','exec','run']:
             self.assertRegex(p.stdout,rf'(?m)^  {name}\s')
-        for name in ['create','start','shell','stop','disconnect','cp','sync','login','mount-drive']:
+        for name in ['setup','create','start','shell','stop','disconnect','cp','sync','login','mount-drive']:
             self.assertNotRegex(p.stdout,rf'(?m)^  {name}\s')
         self.assertEqual(self.calls(),[])
 
@@ -25,16 +25,16 @@ class Hierarchy(unittest.TestCase):
         self.assertEqual(p.returncode,0,p.stderr);self.assertIn('remote-ok',p.stdout)
         p=self.call('session','disconnect','-s','trainer')
         self.assertEqual(p.returncode,0,p.stderr)
-        self.assertIn('trainer',json.loads((self.home/'.config/colab-cli/sessions.json').read_text()))
+        self.assertIn('trainer',json.loads((self.profile/'sessions.json').read_text()))
         p=self.call('session','delete','-s','trainer');self.assertEqual(p.returncode,0,p.stderr)
         records=[json.loads(x) for x in (self.home/'cli-calls.jsonl').read_text().splitlines()]
-        self.assertIn(['--auth','oauth2','stop','-s','trainer'],records)
+        self.assertIn(['--auth','oauth2','--config',str(self.profile/'sessions.json'),'stop','-s','trainer'],records)
 
     def test_global_session_flag_works_at_each_level(self):
         for args in [('-s','trainer','session','status'),('session','-s','trainer','status'),('session','status','-s','trainer')]:
             p=self.call(*args);self.assertEqual(p.returncode,0,p.stderr)
         records=[json.loads(x) for x in (self.home/'cli-calls.jsonl').read_text().splitlines()]
-        self.assertEqual(records,[['--auth','oauth2','status','-s','trainer']]*3)
+        self.assertEqual(records,[['--auth','oauth2','--config',str(self.profile/'sessions.json'),'status','-s','trainer']]*3)
 
     def test_file_group_routes_copy_sync_and_offline_targets(self):
         p=self.call('session','create','trainer');self.assertEqual(p.returncode,0,p.stderr)
@@ -83,4 +83,4 @@ class Hierarchy(unittest.TestCase):
         p=self.call('session','create','trainer');self.assertEqual(p.returncode,0,p.stderr)
         p=self.call('session','stop','-s','trainer');self.assertEqual(p.returncode,0,p.stderr)
         records=[json.loads(x) for x in (self.home/'cli-calls.jsonl').read_text().splitlines()]
-        self.assertIn(['--auth','oauth2','stop','-s','trainer'],records)
+        self.assertIn(['--auth','oauth2','--config',str(self.profile/'sessions.json'),'stop','-s','trainer'],records)

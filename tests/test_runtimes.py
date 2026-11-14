@@ -27,4 +27,4 @@ class RuntimeCatalog(unittest.TestCase):
         p=self.invoke('list');self.assertEqual(p.returncode,0,p.stderr)
         self.assertIn('account entitlement, quota, and capacity',p.stdout)
         self.assertIn('Colab session list',p.stdout)
-        self.assertIn('Colab session create --runtime TYPE',p.stdout)
+        self.assertIn('Colab session create --account EMAIL --runtime TYPE',p.stdout)

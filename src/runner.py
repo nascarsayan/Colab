@@ -13,7 +13,7 @@ def friendly(exc):
     names = ' '.join(type(e).__name__ for e in chain)
     text = ' '.join(str(e) for e in chain).lower()
     if 'TooManyAssignments' in names or 'precondition failed' in text or '412' in text:
-        return 'Google declined the runtime request: session limit, GPU quota, or capacity limit. Stop an unused session with Colab session delete -s NAME, try CPU, or retry later.'
+        return 'Google declined the runtime request: session limit, GPU quota, or capacity limit. Stop an unused session with Colab session delete --account EMAIL -s NAME, try CPU, or retry later.'
     if any(s in names for s in ('ConnectionError', 'ConnectTimeout', 'ReadTimeout', 'gaierror', 'TimeoutError')):
         return 'Cannot reach Google Colab. Check your Internet connection, proxy/VPN, and Google service availability, then retry.'
     if any(s in names for s in ('RefreshError', 'DefaultCredentialsError')) or 'invalid_grant' in text:
@@ -21,7 +21,7 @@ def friendly(exc):
     if 'PermissionError' in names:
         return 'Permission denied while accessing local state or credentials. Check ownership of ~/.config/Colab and ~/.config/colab-cli, and unlock your OS keyring.'
     if 'ModuleNotFoundError' in names or 'ImportError' in names:
-        return 'The Google backend installation is incomplete. Run Colab setup to repair it.'
+        return 'The Google backend installation is incomplete. Retry Colab to repair dependencies automatically.'
     if '401' in text or 'unauthorized' in text:
         return 'Google rejected your login. Run Colab auth login and retry.'
     if '403' in text or 'forbidden' in text:
@@ -29,7 +29,7 @@ def friendly(exc):
     if '429' in text:
         return 'Google is limiting requests or connections. Close unused connections, wait briefly, and retry.'
     if 'FileNotFoundError' in names:
-        return 'A required file or state directory is missing. Run Colab setup --check; check any supplied paths.'
+        return 'A required file or state directory is missing. Check any supplied paths and retry Colab.'
     if 'Exit' in names:
         return None
     message = str(chain[0]).strip().splitlines()[0] if str(chain[0]).strip() else type(chain[0]).__name__
@@ -45,6 +45,19 @@ def run():
         path.mkdir(parents=True, exist_ok=True)
     source = sys.argv[1]
     sys.argv = ['Colab', *sys.argv[2:]]
+    email = os.environ.get('COLAB_ACCOUNT')
+    profile = os.environ.get('COLAB_PROFILE_DIR')
+    if email and profile:
+        from colab_cli import auth
+        from colab_cli.common import state
+        Path(profile).mkdir(parents=True, exist_ok=True, mode=0o700)
+        auth.KEYRING_USERNAME = 'Colab:' + email
+        auth.LEGACY_TOKEN_PATH = str(Path(profile) / 'unused-legacy-token')
+        state.config_path = str(Path(profile) / 'sessions.json')
+        from colab_cli.state import SettingsStore
+        from colab_cli.history import HistoryLogger
+        state._settings_store = SettingsStore(str(Path(profile) / 'settings.json'))
+        state._history = HistoryLogger(str(Path(profile) / 'history'))
     if os.environ.get('COLAB_ALLOW_LOGIN') != '1':
         from colab_cli import auth
         def login_required(*args, **kwargs):
@@ -64,7 +77,7 @@ def run():
                 if output.get('output_type') == 'error':
                     name = output.get('ename', 'Error')
                     value = (str(output.get('evalue', '')).splitlines() or [''])[0]
-                    raise RuntimeError(f'Runtime setup failed ({name}): {value}. Check Google Drive consent with Colab drive mount.')
+                    raise RuntimeError(f'Runtime setup failed ({name}): {value}. Check Google Drive consent with Colab drive mount --account EMAIL.')
             return outputs
         ColabRuntime.execute_code = checked_execute
     exec(compile(source, '<Colab>', 'exec'), {'__name__': '__main__'})

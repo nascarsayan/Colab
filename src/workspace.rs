@@ -10,12 +10,11 @@ pub struct Config {
     pub local: Option<String>,
 }
 fn path(session: &str) -> Result<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?);
     let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, session.as_bytes())
         .simple()
         .to_string();
-    Ok(home
-        .join(".config/Colab/workspaces")
+    Ok(crate::accounts::profile()?
+        .join("workspaces")
         .join(format!("{id}.json")))
 }
 pub fn remote_path(input: &str) -> Result<String> {

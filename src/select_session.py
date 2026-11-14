@@ -10,7 +10,7 @@ if not assignments:
     if allow_new == '1':
         print(candidate)
     else:
-        raise SystemExit('No active sessions. Run Colab session create [NAME] --runtime t4 (or --runtime cpu).')
+        raise SystemExit('No active sessions. Run Colab session create --account EMAIL [NAME] --runtime t4 (or --runtime cpu).')
 else:
     first = assignments[0]
     found = next((s.name for s in local.values() if s.endpoint == first.endpoint), None)

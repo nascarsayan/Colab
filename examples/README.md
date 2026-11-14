@@ -3,7 +3,7 @@
 Run these commands from the project directory (`~/Code/gpu-learning/Colab`). First ensure a runtime is available:
 
 ```sh
-Colab session start
+Colab --account you@gmail.com session start
 ```
 
 | Language | File | What it demonstrates | Expected result |
@@ -16,12 +16,12 @@ Colab session start
 | C, stdin | `stdin_sum.c` | Forwarded stdin, stdout/stderr, nonzero status on invalid input | `sum = 42` |
 
 ```sh
-Colab run examples/vector_add.cu -- 4096
-Colab run examples/device_roundtrip.c
-Colab run examples/parallel_sum.cpp
-Colab run examples/hello.ptx --entry main --grid 1,1,1 --block 4,1,1
-Colab run examples/gpu_info.sh -- hello
-printf '12 30\n' | Colab run examples/stdin_sum.c
+Colab --account you@gmail.com run examples/vector_add.cu -- 4096
+Colab --account you@gmail.com run examples/device_roundtrip.c
+Colab --account you@gmail.com run examples/parallel_sum.cpp
+Colab --account you@gmail.com run examples/hello.ptx --entry main --grid 1,1,1 --block 4,1,1
+Colab --account you@gmail.com run examples/gpu_info.sh -- hello
+printf '12 30\n' | Colab --account you@gmail.com run examples/stdin_sum.c
 ```
 
 `-- 4096` and `-- hello` pass arguments to the uploaded programs. `--block 4,1,1` is a `Colab` option for launching the PTX kernel with four threads in one block. Add `--grid 2,1,1` to launch two blocks and print eight messages. Grid and block default to `1,1,1` and affect PTX files only; CUDA/C++ sources specify their launches in code. See the main README's [argument syntax](../README.md#argument-syntax-and-program-arguments) and [launch dimensions](../README.md#ptx-launch-dimensions-grid-and-block) explanations.
@@ -35,7 +35,7 @@ PTX currently accepts no kernel parameters. This example targets `sm_75` (T4 or 
 To check error propagation:
 
 ```sh
-printf 'invalid\n' | Colab run examples/stdin_sum.c
+printf 'invalid\n' | Colab --account you@gmail.com run examples/stdin_sum.c
 echo "$?"  # 2
 ```
 

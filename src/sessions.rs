@@ -1,5 +1,5 @@
-use anyhow::{bail, Context, Result};
-use std::{collections::HashSet, fs, path::PathBuf};
+use anyhow::{bail, Result};
+use std::{collections::HashSet, fs};
 const WORDS: &[&str] = &[
     "Breezy", "Cloudy", "Cozy", "Dewy", "Dreamy", "Dusty", "Earthy", "Feisty", "Fluffy", "Frosty",
     "Giddy", "Glassy", "Glossy", "Happy", "Hazy", "Honey", "Icy", "Jazzy", "Leafy", "Lucky",
@@ -15,11 +15,10 @@ const NOUNS: &[&str] = &[
     "Sparrow", "Stone", "Sunrise", "Tiger", "Valley", "Willow", "Wren",
 ];
 pub fn generated() -> Result<String> {
-    let home = PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?);
     let mut used = HashSet::new();
     for path in [
-        home.join(".config/colab-cli/sessions.json"),
-        home.join(".config/Colab/runtimes.json"),
+        crate::accounts::sessions_path()?,
+        crate::accounts::profile()?.join("runtimes.json"),
     ] {
         if path.exists() {
             let state: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
@@ -41,8 +40,7 @@ pub fn generated() -> Result<String> {
     bail!("Could not generate an unused session name; supply a name explicitly")
 }
 pub fn local_first() -> Result<Option<String>> {
-    let home = PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?);
-    let path = home.join(".config/colab-cli/sessions.json");
+    let path = crate::accounts::sessions_path()?;
     if !path.exists() {
         return Ok(None);
     }
@@ -64,7 +62,7 @@ pub fn select(explicit: Option<&str>, allow_new: bool) -> Result<String> {
     }
     let name = String::from_utf8(output.stdout)?.trim().to_owned();
     if name.is_empty() {
-        bail!("No active session selected; run Colab session create")
+        bail!("No active session selected; run Colab session create --account EMAIL")
     }
     eprintln!("Using session {name}");
     Ok(name)

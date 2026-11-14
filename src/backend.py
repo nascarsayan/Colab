@@ -15,7 +15,7 @@ memory_option = sys.argv[5] if len(sys.argv) > 5 else ''
 if action == 'connect':
     sys.stdout = sys.stderr
 
-settings_path = Path.home() / '.config/Colab/runtimes.json'
+settings_path = Path(__import__('os').environ.get('COLAB_PROFILE_DIR', str(Path.home() / '.config/Colab'))) / 'runtimes.json'
 settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
 current = state.store.get(name)
 if action == 'create' and current:
@@ -98,6 +98,6 @@ if len(candidates) == 1:
 elif action == 'attach':
     raise SystemExit('Specify an unambiguous unclaimed runtime endpoint using --endpoint; see Colab session list.')
 elif candidates:
-    raise SystemExit('Multiple matching unclaimed runtimes; use Colab session attach --endpoint ENDPOINT.')
+    raise SystemExit('Multiple matching unclaimed runtimes; use Colab session attach --account EMAIL --endpoint ENDPOINT.')
 else:
     allocate()

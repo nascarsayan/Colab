@@ -6,12 +6,11 @@ use std::{
     process::Stdio,
 };
 fn preference(session: &str) -> Result<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?);
     let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, session.as_bytes())
         .simple()
         .to_string();
-    Ok(home
-        .join(".config/Colab/drive")
+    Ok(crate::accounts::profile()?
+        .join("drive")
         .join(format!("{id}.enabled")))
 }
 fn mounted(socket: &Path) -> Result<bool> {
@@ -39,7 +38,7 @@ fn mount_on(socket: &Path, session: &str) -> Result<()> {
         .stdout(Stdio::from(stderr))
         .status()?;
     if !status.success() || !mounted(socket)? {
-        bail!("Google Drive is not mounted. Complete Google's consent using `Colab drive mount -s {session}` before retrying; no transfer was started.")
+        bail!("Google Drive is not mounted. Complete Google's consent using `Colab drive mount --account EMAIL -s {session}` before retrying; no transfer was started.")
     }
     Ok(())
 }

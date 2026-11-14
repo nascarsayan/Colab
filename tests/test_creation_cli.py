@@ -18,21 +18,29 @@ class CreationCLI(unittest.TestCase):
         self.home = Path(self.temp.name)
         self.bin = self.home / 'bin'; self.bin.mkdir()
         self.env = dict(os.environ, HOME=str(self.home), PATH=str(self.bin))
+        self.account_id = '11111111-1111-4111-8111-111111111111'
+        self.profile = self.home / '.config/Colab/accounts' / self.account_id
+        self.profile.mkdir(parents=True)
+        (self.home / '.config/Colab/accounts.json').write_text(json.dumps({'default':'one@gmail.com','accounts':{'one@gmail.com':{'id':self.account_id}}}))
         interpreter = self.script('fake-python', '''import json,os,pathlib,sys
-home=pathlib.Path(os.environ['HOME']);source=sys.argv[3];args=sys.argv[4:]
+home=pathlib.Path(os.environ['HOME'])
+if 'importlib.metadata' in sys.argv[2]: print('0.8.0');sys.exit(0)
+source=sys.argv[3];args=sys.argv[4:]
+profile=pathlib.Path(os.environ.get('COLAB_PROFILE_DIR',str(home)))
 log=home/'calls.jsonl'
 if 'Named, isolated Colab runtime' in source:
  action,name,runtime=args[:3]
  with log.open('a') as f:f.write(json.dumps(args)+'\\n')
- p=home/'.config/colab-cli/sessions.json';p.parent.mkdir(parents=True,exist_ok=True)
+ p=profile/'sessions.json';p.parent.mkdir(parents=True,exist_ok=True)
  state=json.loads(p.read_text()) if p.exists() else {}
  state[name]={'name':name,'endpoint':'endpoint-'+name};p.write_text(json.dumps(state))
 elif 'Return the first active runtime' in source:
- p=home/'.config/colab-cli/sessions.json';state=json.loads(p.read_text()) if p.exists() else {}
+ p=profile/'sessions.json';state=json.loads(p.read_text()) if p.exists() else {}
  if state: print(next(iter(state)))
  elif args[1]=='1': print(args[0])
  else: print('Error: No active sessions. Run Colab session create.',file=sys.stderr);sys.exit(1)
 elif 'from colab_cli.cli import app' in source:
+ if os.environ.get('MOCK_FAIL_ACCOUNT')==os.environ.get('COLAB_ACCOUNT'):print('Error: expired login',file=sys.stderr);sys.exit(1)
  with (home/'cli-calls.jsonl').open('a') as f:f.write(json.dumps(args)+'\\n')
 elif 'Recursive copy and conflict-aware sync' in source:
  if os.environ.get('MOCK_SYNC_FAIL'): print('Copy/sync failed: interrupted transfer',file=sys.stderr);sys.exit(1)
@@ -55,6 +63,9 @@ else:
         path=self.bin/name;path.write_text('#!'+sys.executable+'\n'+code+'\n');path.chmod(0o755);return path
 
     def call(self,*args):
+        # Existing workflow tests explicitly select their fixture account.
+        if not any(a in args for a in ('--help','-h','auth','runtime','targets','sync-targets','sessions','list','setup')) and '--account' not in args and '-a' not in args:
+            args=('--account','one@gmail.com',*args)
         return subprocess.run([str(CLI),*args],env=self.env,capture_output=True,text=True,timeout=20)
 
     def calls(self):

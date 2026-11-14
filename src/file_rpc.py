@@ -18,7 +18,7 @@ def safe_path(root, relative=''):
     drive = Path('/content/drive')
     if root == drive or drive in root.parents:
         if not os.path.ismount(drive) or not (drive / 'MyDrive').is_dir():
-            raise RuntimeError('Google Drive is not mounted; no files were written. Run Colab drive mount.')
+            raise RuntimeError('Google Drive is not mounted; no files were written. Run Colab drive mount --account EMAIL.')
     relative = Path(relative)
     if relative.is_absolute() or '..' in relative.parts:
         raise ValueError('Invalid relative path')

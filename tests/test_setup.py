@@ -47,36 +47,32 @@ p.write_text('#!'+str(home/'bin/fake-python')+'\\n');p.chmod(0o755)
     def call(self, *args):
         return subprocess.run([str(CLI), *args], env=self.env, capture_output=True, text=True, timeout=20)
 
-    def test_check_never_installs_logs_in_or_generates_keys(self):
-        self.backend()
-        p = self.call('setup', '--check')
-        self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn('Login was not checked', p.stdout)
+    def test_setup_removed_and_help_stays_offline(self):
+        self.assertEqual(self.call('setup').returncode, 2)
+        self.assertEqual(self.call('--help').returncode, 0)
         self.assertFalse((self.home / '.config').exists())
-        self.assertNotIn('guided-login-called', p.stdout)
 
     def test_installs_backend_without_login_and_repeat_is_idempotent(self):
         self.script('uv', self.uv_code)
-        p = self.call('setup', '--skip-login')
+        p = self.call('auth', 'login')
         self.assertEqual(p.returncode, 0, p.stderr)
         args = json.loads((self.home / 'uv-args.json').read_text())
-        self.assertEqual(args, ['tool', 'install', '--python', '3.13', 'google-colab-cli==0.8.0'])
-        self.assertTrue((self.home / '.config/Colab/id_ed25519').exists())
+        self.assertEqual(args, ['tool', 'install', '--python', '3.13', 'google-colab-cli==0.8.0', '--force', '--reinstall'])
         (self.home / 'uv-args.json').unlink()
-        p = self.call('setup', '--skip-login')
+        p = self.call('auth', 'login')
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertFalse((self.home / 'uv-args.json').exists())
 
     def test_default_setup_runs_login_but_does_not_allocate(self):
         self.backend()
-        p = self.call('setup')
+        p = self.call('auth', 'login')
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn('guided-login-called', p.stdout)
         self.assertFalse((self.home / '.config/colab-cli/sessions.json').exists())
 
     def test_missing_openssh_is_actionable(self):
         (self.bin / 'ssh').unlink()
-        p = self.call('setup')
+        p = self.call('auth', 'login')
         self.assertNotEqual(p.returncode, 0)
         self.assertIn('openssh-client', p.stderr)
         self.assertFalse((self.home / '.config').exists())
@@ -94,7 +90,16 @@ args=sys.argv[1:]
 pathlib.Path(args[args.index('--output')+1]).write_text(''' + repr(installer) + ''')
 (pathlib.Path(os.environ['HOME'])/'download-url').write_text(args[-1])
 ''')
-        p = self.call('setup', '--skip-login')
+        p = self.call('auth', 'login')
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual((self.home / 'download-url').read_text(), 'https://astral.sh/uv/0.13.7/install.sh')
         self.assertTrue((self.home / '.config/Colab/backend/bin/colab').exists())
+
+    def test_broken_backend_is_reinstalled_even_with_existing_launcher(self):
+        broken=self.script('broken-python', 'raise SystemExit(1)')
+        (self.bin/'colab').write_text('#!'+str(broken)+'\n')
+        self.script('uv',self.uv_code)
+        p=self.call('auth','login')
+        self.assertEqual(p.returncode,0,p.stderr)
+        args=json.loads((self.home/'uv-args.json').read_text())
+        self.assertIn('--force',args);self.assertIn('--reinstall',args)

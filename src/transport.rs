@@ -9,21 +9,38 @@ use std::{
 };
 
 fn socket_path(session: &str) -> Result<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?);
     let state: serde_json::Value = serde_json::from_slice(
-        &fs::read(home.join(".config/colab-cli/sessions.json"))
-            .context("No Colab session state; run Colab session start")?,
+        &fs::read(crate::accounts::sessions_path()?)
+            .context("No Colab session state; run Colab session start --account EMAIL")?,
     )?;
     let endpoint = state
         .get(session)
         .and_then(|s| s.get("endpoint"))
         .and_then(|v| v.as_str())
-        .context("Session not found; run Colab session start")?;
+        .context("Session not found; run Colab session start --account EMAIL")?;
+    if crate::accounts::profile()?.join("legacy-mux").exists() {
+        let legacy_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, endpoint.as_bytes())
+            .simple()
+            .to_string();
+        let legacy = crate::accounts::root()?
+            .join("mux")
+            .join(format!("{legacy_id}.sock"));
+        if alive(&legacy) {
+            return Ok(legacy);
+        }
+    }
     // Key by endpoint so aliases for the same runtime share one transport too.
-    let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, endpoint.as_bytes())
-        .simple()
-        .to_string();
-    let dir = home.join(".config/Colab/mux");
+    let id = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!(
+            "{}:{endpoint}",
+            std::env::var("COLAB_ACCOUNT").unwrap_or_default()
+        )
+        .as_bytes(),
+    )
+    .simple()
+    .to_string();
+    let dir = crate::accounts::root()?.join("mux");
     fs::create_dir_all(&dir)?;
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
     let socket = dir.join(format!("{id}.sock"));
@@ -68,13 +85,19 @@ pub fn client(socket: &Path) -> Command {
     p
 }
 fn session_lock(session: &str) -> Result<File> {
-    let home = PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?);
-    let dir = home.join(".config/Colab/mux");
+    let dir = crate::accounts::root()?.join("mux");
     fs::create_dir_all(&dir)?;
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
-    let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, session.as_bytes())
-        .simple()
-        .to_string();
+    let id = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!(
+            "{}:{session}",
+            std::env::var("COLAB_ACCOUNT").unwrap_or_default()
+        )
+        .as_bytes(),
+    )
+    .simple()
+    .to_string();
     lock(&dir.join(format!("session-{id}")))
 }
 pub fn connect(session: &str) -> Result<PathBuf> {
@@ -100,6 +123,10 @@ pub fn connect(session: &str) -> Result<PathBuf> {
     }
     let key = crate::identity()?;
     let interpreter = crate::backend_interpreter()?;
+    let profile_path = crate::accounts::sessions_path()?;
+    let profile_arg = profile_path
+        .to_str()
+        .context("Account state path is not UTF-8")?;
     let proxy = [
         interpreter
             .to_str()
@@ -107,6 +134,8 @@ pub fn connect(session: &str) -> Result<PathBuf> {
         "-c",
         include_str!("runner.py"),
         crate::BACKEND_CLI,
+        "--config",
+        profile_arg,
         "--auth",
         "oauth2",
         "ssh",
@@ -161,7 +190,7 @@ pub fn connect(session: &str) -> Result<PathBuf> {
         let hint = if details.contains("429") {
             "Google rejected an additional SSH connection. Close standalone `colab ssh` connections and retry."
         } else {
-            "The connection failed before your command was submitted. Run `Colab session start` to check runtime availability and authentication."
+            "The connection failed before your command was submitted. Run `Colab session start --account EMAIL` to check runtime availability and authentication."
         };
         bail!(
             "Could not establish shared SSH transport ({status}). {hint}\n{}\nDiagnostics: {}",

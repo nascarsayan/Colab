@@ -11,6 +11,9 @@ use std::path::PathBuf;
 pub(crate) struct Cli {
     #[arg(short,long,global=true,value_parser=parse_name)]
     pub session: Option<String>,
+    /// Google account email; required for operations on a single runtime.
+    #[arg(short, long, global = true)]
+    pub account: Option<String>,
     /// Skip the configured PC-to-Colab sync for this operation.
     #[arg(long, global = true)]
     pub no_auto_sync: bool,
@@ -19,8 +22,6 @@ pub(crate) struct Cli {
 }
 #[derive(Subcommand)]
 pub(crate) enum Tree {
-    /// Install dependencies and guide initial Google login.
-    Setup(SetupArgs),
     /// Google account authentication.
     Auth {
         #[command(subcommand)]
@@ -83,6 +84,8 @@ pub(crate) enum Tree {
 }
 #[derive(Subcommand)]
 pub(crate) enum AuthCommand {
+    /// List saved Google accounts.
+    List,
     /// Sign in or verify cached credentials; opens Google consent when needed.
     Login(LoginArgs),
 }
@@ -100,9 +103,9 @@ pub(crate) enum SessionCommand {
     /// Delete the runtime and release its resources; preserve Google Drive files.
     #[command(alias = "stop")]
     Delete,
-    /// List the account's active runtimes.
+    /// List active runtimes across saved accounts; --account filters.
     List,
-    /// Show hardware and state for the selected runtime.
+    /// Show runtime status across accounts; --account and --session filter.
     Status,
     /// Adopt an existing runtime by its backend endpoint.
     Attach(AttachArgs),
@@ -131,15 +134,6 @@ pub(crate) enum FilesCommand {
 pub(crate) enum DriveCommand {
     /// Mount/reuse Google Drive and prepare the session's working folder.
     Mount,
-}
-#[derive(Args)]
-pub(crate) struct SetupArgs {
-    #[arg(long, conflicts_with = "skip_login")]
-    check: bool,
-    #[arg(long)]
-    skip_login: bool,
-    #[arg(long)]
-    no_browser: bool,
 }
 #[derive(Args)]
 pub(crate) struct LoginArgs {
@@ -232,11 +226,7 @@ pub(crate) enum Operation {
     RuntimeList {
         json: bool,
     },
-    Setup {
-        check: bool,
-        skip_login: bool,
-        no_browser: bool,
-    },
+    AuthList,
     Login {
         no_browser: bool,
     },
@@ -299,6 +289,9 @@ impl Tree {
                 command: RuntimeCommand::List { json },
             } => O::RuntimeList { json },
             Self::Auth {
+                command: AuthCommand::List,
+            } => O::AuthList,
+            Self::Auth {
                 command: AuthCommand::Login(a),
             } => Self::Login(a).operation(),
             Self::Session { command } => match command {
@@ -320,11 +313,6 @@ impl Tree {
             Self::Drive {
                 command: DriveCommand::Mount,
             } => O::MountDrive,
-            Self::Setup(a) => O::Setup {
-                check: a.check,
-                skip_login: a.skip_login,
-                no_browser: a.no_browser,
-            },
             Self::Login(a) => O::Login {
                 no_browser: a.no_browser,
             },
