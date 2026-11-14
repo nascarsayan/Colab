@@ -13,7 +13,7 @@ def friendly(exc):
     names = ' '.join(type(e).__name__ for e in chain)
     text = ' '.join(str(e) for e in chain).lower()
     if 'TooManyAssignments' in names or 'precondition failed' in text or '412' in text:
-        return 'Google declined the runtime request: session limit, GPU quota, or capacity limit. Stop an unused session with Colab session stop -s NAME, try CPU, or retry later.'
+        return 'Google declined the runtime request: session limit, GPU quota, or capacity limit. Stop an unused session with Colab session delete -s NAME, try CPU, or retry later.'
     if any(s in names for s in ('ConnectionError', 'ConnectTimeout', 'ReadTimeout', 'gaierror', 'TimeoutError')):
         return 'Cannot reach Google Colab. Check your Internet connection, proxy/VPN, and Google service availability, then retry.'
     if any(s in names for s in ('RefreshError', 'DefaultCredentialsError')) or 'invalid_grant' in text:

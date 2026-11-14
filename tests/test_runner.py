@@ -47,7 +47,7 @@ try: raise TooManyAssignmentsError('Precondition Failed')
 except Exception: raise Exit()
 '''
         code,out,err=self.invoke(source)
-        self.assertEqual(code,1);self.assertIn('session limit',err);self.assertIn('Colab session stop',err)
+        self.assertEqual(code,1);self.assertIn('session limit',err);self.assertIn('Colab session delete',err)
 
     def test_backend_exit_preserves_status_without_trace(self):
         code,out,err=self.invoke("class Exit(Exception): exit_code=7\nraise Exit()")

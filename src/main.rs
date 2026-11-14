@@ -100,8 +100,10 @@ fn identity() -> Result<PathBuf> {
     Ok(key)
 }
 mod drive;
+mod runtimes;
 mod sessions;
 mod setup;
+mod shell;
 mod targets;
 mod transport;
 mod workspace;
@@ -121,7 +123,8 @@ fn execute_on(socket: &Path, cwd: &str, command: Option<&str>) -> Result<()> {
 }
 fn ssh(session: &str, command: Option<&str>, auto_sync: bool) -> Result<()> {
     let (socket, cwd) = workspace::prepare(session, auto_sync)?;
-    execute_on(&socket, &cwd, command)
+    let shell_command = shell::command(session);
+    execute_on(&socket, &cwd, Some(command.unwrap_or(&shell_command)))
 }
 fn find_executable(name: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
@@ -278,6 +281,7 @@ fn run() -> Result<()> {
         Command::Setup { .. }
         | Command::Login { .. }
         | Command::Sessions
+        | Command::RuntimeList { .. }
         | Command::Create { .. }
         | Command::SyncTargets { .. } => String::new(),
         Command::Attach { .. } => explicit
@@ -308,6 +312,7 @@ fn run() -> Result<()> {
             no_browser,
         } => setup::run(check, skip_login, no_browser),
         Command::Login { no_browser } => setup::login(no_browser),
+        Command::RuntimeList { json } => runtimes::list(json),
         Command::Create {
             name,
             runtime,

@@ -12,13 +12,15 @@ Colab
 ├── session
 │   ├── create [NAME]
 │   ├── start
-│   ├── connect
+│   ├── shell
 │   ├── disconnect
-│   ├── stop
+│   ├── delete
 │   ├── list
 │   ├── status
 │   ├── attach
 │   └── url
+├── runtime
+│   └── list
 ├── files
 │   ├── copy SRC DEST
 │   ├── sync SRC DIRECTION DEST
@@ -29,7 +31,7 @@ Colab
 └── run FILE [OPTIONS] -- [PROGRAM_ARGUMENTS]
 ```
 
-`session create` allocates an independent runtime. `session start` prepares/reuses a runtime without entering a shell. `session connect` enters an interactive shell; `session disconnect` only closes the local SSH master; `session stop` terminates the runtime. `-s NAME` and `--no-auto-sync` are global flags and work before or after command groups. Use `Colab session --help`, `Colab files --help`, or a leaf's `--help` to inspect its options.
+`session create` allocates an independent runtime. `session start` prepares/reuses a runtime without entering a shell. `session shell` enters an interactive shell; `session disconnect` only closes the local SSH master; `session delete` terminates the runtime. `-s NAME` and `--no-auto-sync` are global flags and work before or after command groups. Use `Colab session --help`, `Colab files --help`, or a leaf's `--help` to inspect its options.
 
 ## Build without installing
 
@@ -48,7 +50,7 @@ For an optimized release binary:
 cargo build --release --locked
 ./target/release/Colab --help
 ./target/release/Colab setup
-./target/release/Colab session connect
+./target/release/Colab session shell
 ```
 
 Both build commands leave the executable under `target/`; they do not install it or change PATH. Run it using the path above. Running `setup` afterward can install the Google backend and other runtime dependencies; the build itself does not do that. `cargo install --path . --locked` is a separate optional step if you want the `Colab` executable in Cargo's binary directory.
@@ -98,9 +100,9 @@ Colab session start                  # reuse the existing T4 or provision one
 Colab exec nvidia-smi
 Colab exec 'pwd && nvcc --version'
 Colab run ./kernel.cu -- arg1 arg2
-Colab session connect                  # interactive remote Bash; exit to return
+Colab session shell                  # interactive remote Bash; exit to return
 Colab session status
-Colab session stop                   # releases the runtime
+Colab session delete                   # releases the runtime
 ```
 
 `session create [NAME]` allocates an independent runtime. If NAME is omitted, it generates an unused adjective/adverb + noun name such as `BreezyMarble` or `MistyWillow`; names are preserved during recovery. `start` reuses the first active runtime when no `-s` is supplied, or generates a name and creates a runtime when none is open. Normal operations (`exec`, `shell`, `run`, copy/sync, status) select the first active session in the same order as `Colab session list`; use `--session NAME` / `-s NAME` to choose another. With no active sessions, operations report an actionable error instead of allocating unexpectedly. An explicitly named expired session can still be recovered with `-s`.
@@ -114,13 +116,13 @@ Colab session url --open             # open the managed runtime in Colab
 printf 'hello\n' | Colab exec 'read x; echo "$x"'
 ```
 
-Opening a notebook is optional for CLI operation. Active runtimes discovered from a notebook are given generated local names when selected. Explicit `create` never silently reuses another session's endpoint; `attach` intentionally adopts a runtime. `stop` terminates the selected runtime, including when a notebook is using it. `disconnect` only closes the local SSH master; it selects the first active session when possible and falls back to the first locally recorded session if Google cannot be queried, so it can also work offline.
+Opening a notebook is optional for CLI operation. Active runtimes discovered from a notebook are given generated local names when selected. Explicit `create` never silently reuses another session's endpoint; `attach` intentionally adopts a runtime. `session delete` terminates the selected runtime, including when a notebook is using it. `disconnect` only closes the local SSH master; it selects the first active session when possible and falls back to the first locally recorded session if Google cannot be queried, so it can also work offline.
 
 ## Commands and input
 
 `exec` accepts either one shell string (`exec 'echo hello | wc -c'`) or separate literal arguments (`exec printf '%s\n' 'hello world'`). stdin, stdout, stderr, and exit codes are forwarded through SSH. In an interactive terminal SSH uses a PTY, where terminal output can combine stdout/stderr. Pipe or redirect output when separate streams matter.
 
-Each `exec` starts a new remote process; changes to `cd` or `export` last only for that command. Use `shell` for a persistent interactive Bash session. `shell` supports terminal input and programs such as editors. Exiting the shell leaves the runtime allocated; release it with `stop`.
+Each `exec` starts a new remote process; changes to `cd` or `export` last only for that command. Use `shell` for a persistent interactive Bash session. `shell` supports terminal input and programs such as editors. Exiting the shell leaves the runtime allocated; release it with `session delete`.
 
 `run` uploads one source file to a unique remote `/tmp` path, then compiles C/C++/CUDA with nvcc and executes it. Put program arguments after `--`. Shell scripts (`.sh`) can also be uploaded and run. Include trees and multi-file projects are not uploaded automatically.
 
@@ -200,7 +202,7 @@ Open as many local terminals as you need. A shared OpenSSH master keeps one WebS
 
 ```sh
 # Terminal 1
-Colab session connect
+Colab session shell
 
 # Terminal 2, while the shell remains open
 Colab exec nvidia-smi
@@ -211,7 +213,7 @@ Colab run ./kernel.cu
 
 The connection starts automatically on the first command. A file lock prevents duplicate master connections when commands start simultaneously. Sockets live in `~/.config/Colab/mux/`, in a directory accessible only to your account, and are keyed by runtime endpoint so session aliases share one connection. A dead master or stale socket is replaced on the next command. Before opening a new transport, the CLI checks Google for an active assignment and refreshes runtime credentials. Connection-setup failures include the backend diagnostics; only HTTP 429 is described as a competing SSH connection. Commands already submitted are never retried automatically.
 
-The master exits after ten minutes with no active command channels. `Colab session disconnect` closes it immediately, terminating any active channels but leaving the GPU runtime allocated. The next command reconnects automatically. `Colab session stop` closes the master and releases the runtime. Standalone Google-backend SSH connections do not use these sockets; use `Colab` consistently across terminals.
+The master exits after ten minutes with no active command channels. `Colab session disconnect` closes it immediately, terminating any active channels but leaving the GPU runtime allocated. The next command reconnects automatically. `Colab session delete` closes the master and releases the runtime. Standalone Google-backend SSH connections do not use these sockets; use `Colab` consistently across terminals.
 
 This removes the single-connection conflict between CLI commands; concurrent channel counts are still bounded by the remote SSH server and the runtime's resources. Verified six simultaneous commands starting from no master, with isolated stdin, stdout/stderr and exit codes; reconnection after forcibly killed master/stale socket; and CUDA execution while an interactive shell remained open.
 
@@ -221,7 +223,7 @@ See [examples/README.md](examples/README.md) for runnable CUDA, C, C++, PTX, and
 
 ## Runtime recovery
 
-If Colab terminates a runtime, its local session record can become stale or be removed by `status`. Use `Colab session connect -s NAME`, `Colab exec -s NAME COMMAND`, or `Colab run -s NAME FILE` to recover that named session. Unqualified commands select the first currently active session. With none active, run `Colab session create` or `Colab session start`. Provisioning still depends on Google account quota and GPU availability; failures are reported before your command is submitted.
+If Colab terminates a runtime, its local session record can become stale or be removed by `status`. Use `Colab session shell -s NAME`, `Colab exec -s NAME COMMAND`, or `Colab run -s NAME FILE` to recover that named session. Unqualified commands select the first currently active session. With none active, run `Colab session create` or `Colab session start`. Provisioning still depends on Google account quota and GPU availability; failures are reported before your command is submitted.
 
 A replacement runtime has a fresh filesystem. `run` uploads the specified local source again; other remote files and installed packages must be restored separately. Recovery never retries a user command that may already have started.
 
@@ -306,7 +308,7 @@ Colab session create preprocessing --runtime cpu
 Colab session create experiments --runtime a100 --high-mem
 
 # Select the desired session on every operation (before or after the command).
-Colab session connect -s trainer
+Colab session shell -s trainer
 Colab exec -s preprocessing 'uname -a'
 Colab run -s trainer examples/vector_add.cu -- 4096
 Colab files copy -s trainer ./data colab:/content/data
@@ -314,7 +316,7 @@ Colab files sync -s trainer ./data '>' colab:/content/data
 Colab drive mount -s trainer
 Colab session list
 Colab session disconnect -s trainer
-Colab session stop -s trainer
+Colab session delete -s trainer
 ```
 
 `session create [NAME]` always requests a **separate runtime**, even when another runtime of the same type exists. Omit NAME for an unused two-word generated name (e.g. `SunnyRiver`); supply NAME or `-s NAME` for an explicit name. Duplicate local names are rejected; use `session start -s NAME` to reuse or recover an existing session. Names may contain 1–64 ASCII letters, digits, dots, underscores, or hyphens. There is no hardcoded default session name. Operations without `-s` use the first active session.
@@ -342,7 +344,7 @@ Colab session create trainer --runtime t4 --drive-path '~/Code/Trainer'
 Colab session create trainer --runtime t4 --drive-path '~/Code/Trainer' --local-dir ~/Code/my-project
 
 Colab exec pwd               # first active session; mount/check workspace, then run
-Colab session connect -s trainer       # sync PC folder first, then enter Drive workspace
+Colab session shell -s trainer       # sync PC folder first, then enter Drive workspace
 Colab exec -s trainer 'ls'   # sync PC folder again before executing
 
 # Deliberately skip the automatic PC push for one operation (still mount Drive).
@@ -358,7 +360,7 @@ All workspace and sync steps complete before the requested user command is submi
 
 ## Readable failures
 
-Normal runtime commands never start an unexpected OAuth prompt or consume program stdin for login. They say `Run Colab auth login` when credentials are missing or expired. Fresh local state directories are created before Google's session/lock code runs. Backend failures are translated to short errors for missing login, Internet/connectivity problems, denied access, and session/quota/capacity limits. A quota/precondition rejection does not necessarily mean multiple sessions are universally prohibited: eligibility and capacity are controlled by Google. Stop an unused session, choose CPU, or retry later as the message suggests.
+Normal runtime commands never start an unexpected OAuth prompt or consume program stdin for login. They say `Run Colab auth login` when credentials are missing or expired. Fresh local state directories are created before Google's session/lock code runs. Backend failures are translated to short errors for missing login, Internet/connectivity problems, denied access, and session/quota/capacity limits. A quota/precondition rejection does not necessarily mean multiple sessions are universally prohibited: eligibility and capacity are controlled by Google. Delete an unused session, choose CPU, or retry later as the message suggests.
 
 Python and Typer exceptions are handled at the subprocess boundary; chained backend tracebacks are not printed in normal operation. Explicit `Colab auth login`/`setup` still guide Google's consent flow. Interrupted user commands are never automatically replayed. The tests cover a fresh HOME with the installed Google backend, missing login without prompts, offline errors, quota errors, server-order default selection, generated names, and workspace/pre-execution sync.
 
@@ -370,11 +372,36 @@ The previous flat spellings remain accepted as hidden compatibility aliases, but
 | --- | --- |
 | `Colab login` | `Colab auth login` |
 | `Colab create` / `start` / `sessions` / `status` | `Colab session create` / `start` / `list` / `status` |
-| `Colab shell` | `Colab session connect` |
-| `Colab disconnect` / `stop` / `attach` / `url` | `Colab session disconnect` / `stop` / `attach` / `url` |
+| `Colab shell` | `Colab session shell` |
+| `Colab session connect` | `Colab session shell` |
+| `Colab disconnect` / `stop` / `attach` / `url` | `Colab session disconnect` / `delete` / `attach` / `url` |
 | `Colab cp` | `Colab files copy` (`files cp` is also accepted) |
 | `Colab sync` | `Colab files sync` |
 | `Colab sync-targets` | `Colab files targets` |
 | `Colab mount-drive` | `Colab drive mount` |
 
 `exec`, `run`, and `setup` retain their direct spellings because they are the primary execution and bootstrap actions.
+
+## Interactive shell prompt
+
+`Colab session shell` shows the selected session name and the last two folders of the current path:
+
+```text
+(SandyFinch) MyDrive/Code $
+```
+
+For example, `/content/drive/MyDrive/Code` becomes `MyDrive/Code`; after entering `/content/drive/MyDrive/Code/src`, the prompt becomes `(SandyFinch) Code/src $`. It updates as you change directories and always uses a literal `$`, even though the runtime account is root. The shell-specific prompt does not modify the runtime's global Bash configuration or affect `Colab exec` output.
+
+The interactive prompt colors the session name **cyan**, the last two path components **blue**, and `$` **green**. After a failed command, `$` turns **red**. `NO_COLOR=1` or `TERM=dumb` selects a plain prompt. Color sequences are marked as nonprinting so long command lines wrap correctly; the colors apply only to the interactive shell.
+
+## List runtime types
+
+```sh
+Colab runtime list           # supported CPU/GPU/TPU choices; no login needed
+Colab runtime list --json    # machine-readable catalog
+Colab session list          # active sessions in your Google account
+```
+
+The runtime catalog lists the same `--runtime` choices accepted by `session create`: `cpu`, `t4`, `l4`, `g4`, `h100`, `a100`, `v5e1`, and `v6e1`. It works offline and does not allocate anything. It is a catalog of CLI-supported types, not a live account entitlement or available-capacity check; Google determines which ones your account can allocate.
+
+`Colab session delete` terminates the selected runtime and releases its resources. It preserves files stored in Google Drive. `Colab session stop` remains accepted as a hidden compatibility alias.

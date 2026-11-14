@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     version,
-    about = "Manage Colab session list, run GPU code, and synchronize files"
+    about = "Manage Colab sessions, run GPU code, and synchronize files"
 )]
 pub(crate) struct Cli {
     #[arg(short,long,global=true,value_parser=parse_name)]
@@ -26,10 +26,15 @@ pub(crate) enum Tree {
         #[command(subcommand)]
         command: AuthCommand,
     },
-    /// Create, connect to, inspect, and stop runtimes.
+    /// Create, inspect, and manage runtimes.
     Session {
         #[command(subcommand)]
         command: SessionCommand,
+    },
+    /// Inspect supported CPU, GPU, and TPU runtime types.
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommand,
     },
     /// Copy files and synchronize local/remote folders.
     #[command(alias = "file")]
@@ -88,11 +93,13 @@ pub(crate) enum SessionCommand {
     /// Prepare/recover a runtime without entering an interactive shell.
     Start(StartArgs),
     /// Open an interactive shell in the session's synchronized Drive workspace.
-    Connect,
+    #[command(alias = "connect")]
+    Shell,
     /// Close the PC's shared SSH connection; leave the runtime running.
     Disconnect,
-    /// Terminate the runtime and release its resources.
-    Stop,
+    /// Delete the runtime and release its resources; preserve Google Drive files.
+    #[command(alias = "stop")]
+    Delete,
     /// List the account's active runtimes.
     List,
     /// Show hardware and state for the selected runtime.
@@ -101,6 +108,14 @@ pub(crate) enum SessionCommand {
     Attach(AttachArgs),
     /// Print or open the selected runtime's notebook URL.
     Url(UrlArgs),
+}
+#[derive(Subcommand)]
+pub(crate) enum RuntimeCommand {
+    /// List CLI-supported runtime types (offline; does not check account quota).
+    List {
+        #[arg(long)]
+        json: bool,
+    },
 }
 #[derive(Subcommand)]
 pub(crate) enum FilesCommand {
@@ -214,6 +229,9 @@ pub(crate) struct UrlArgs {
 
 // The execution layer has no knowledge of public spellings or aliases.
 pub(crate) enum Operation {
+    RuntimeList {
+        json: bool,
+    },
     Setup {
         check: bool,
         skip_login: bool,
@@ -277,15 +295,18 @@ impl Tree {
     pub fn operation(self) -> Operation {
         use Operation as O;
         match self {
+            Self::Runtime {
+                command: RuntimeCommand::List { json },
+            } => O::RuntimeList { json },
             Self::Auth {
                 command: AuthCommand::Login(a),
             } => Self::Login(a).operation(),
             Self::Session { command } => match command {
                 SessionCommand::Create(a) => Self::Create(a).operation(),
                 SessionCommand::Start(a) => Self::Start(a).operation(),
-                SessionCommand::Connect => O::Shell,
+                SessionCommand::Shell => O::Shell,
                 SessionCommand::Disconnect => O::Disconnect,
-                SessionCommand::Stop => O::Stop,
+                SessionCommand::Delete => O::Stop,
                 SessionCommand::List => O::Sessions,
                 SessionCommand::Status => O::Status,
                 SessionCommand::Attach(a) => Self::Attach(a).operation(),

@@ -11,7 +11,7 @@ class Hierarchy(unittest.TestCase):
 
     def test_root_help_only_advertises_the_public_tree(self):
         p=self.call('--help');self.assertEqual(p.returncode,0)
-        for name in ['setup','auth','session','files','drive','exec','run']:
+        for name in ['setup','auth','session','runtime','files','drive','exec','run']:
             self.assertRegex(p.stdout,rf'(?m)^  {name}\s')
         for name in ['create','start','shell','stop','disconnect','cp','sync','login','mount-drive']:
             self.assertNotRegex(p.stdout,rf'(?m)^  {name}\s')
@@ -21,12 +21,12 @@ class Hierarchy(unittest.TestCase):
         p=self.call('session','create','trainer','--runtime','cpu')
         self.assertEqual(p.returncode,0,p.stderr)
         self.assertIn(['create','trainer','NONE','','false'],self.calls())
-        p=self.call('session','connect','-s','trainer')
+        p=self.call('session','shell','-s','trainer')
         self.assertEqual(p.returncode,0,p.stderr);self.assertIn('remote-ok',p.stdout)
         p=self.call('session','disconnect','-s','trainer')
         self.assertEqual(p.returncode,0,p.stderr)
         self.assertIn('trainer',json.loads((self.home/'.config/colab-cli/sessions.json').read_text()))
-        p=self.call('session','stop','-s','trainer');self.assertEqual(p.returncode,0,p.stderr)
+        p=self.call('session','delete','-s','trainer');self.assertEqual(p.returncode,0,p.stderr)
         records=[json.loads(x) for x in (self.home/'cli-calls.jsonl').read_text().splitlines()]
         self.assertIn(['--auth','oauth2','stop','-s','trainer'],records)
 
@@ -56,7 +56,31 @@ class Hierarchy(unittest.TestCase):
         self.assertIn('/content/drive/MyDrive/Code',p.stdout)
 
     def test_empty_groups_show_help_without_touching_google(self):
-        for group in ['auth','session','files','drive']:
+        for group in ['auth','session','runtime','files','drive']:
             p=self.call(group);self.assertNotEqual(p.returncode,0)
             self.assertIn('Usage:',p.stderr);self.assertNotIn('Traceback',p.stderr)
         self.assertEqual(self.calls(),[])
+
+    def test_session_help_uses_shell_as_primary_name(self):
+        p=self.call('session','--help')
+        self.assertEqual(p.returncode,0)
+        self.assertRegex(p.stdout,r'(?m)^  shell\s')
+        self.assertNotRegex(p.stdout,r'(?m)^  connect\s')
+
+    def test_connect_remains_a_compatibility_alias(self):
+        p=self.call('session','create','trainer');self.assertEqual(p.returncode,0,p.stderr)
+        p=self.call('session','connect','-s','trainer')
+        self.assertEqual(p.returncode,0,p.stderr)
+        self.assertIn('remote-ok',p.stdout)
+
+    def test_session_help_advertises_delete_and_hides_stop_alias(self):
+        p=self.call('session','--help')
+        self.assertEqual(p.returncode,0)
+        self.assertRegex(p.stdout,r'(?m)^  delete\s')
+        self.assertNotRegex(p.stdout,r'(?m)^  stop\s')
+
+    def test_stop_alias_still_deletes_the_runtime(self):
+        p=self.call('session','create','trainer');self.assertEqual(p.returncode,0,p.stderr)
+        p=self.call('session','stop','-s','trainer');self.assertEqual(p.returncode,0,p.stderr)
+        records=[json.loads(x) for x in (self.home/'cli-calls.jsonl').read_text().splitlines()]
+        self.assertIn(['--auth','oauth2','stop','-s','trainer'],records)
