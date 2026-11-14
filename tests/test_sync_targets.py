@@ -30,6 +30,8 @@ class Targets(unittest.TestCase):
             (self.dir / (session + '.target.json')).write_text(json.dumps(record))
         p = self.run_cli('--json')
         self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(len(json.loads(p.stdout)), 2)
+        p = self.run_cli('--session', 'gpu-proxy', '--json')
         self.assertEqual([r['session'] for r in json.loads(p.stdout)], ['gpu-proxy'])
         p = self.run_cli('--all-sessions', '--json')
         self.assertEqual(len(json.loads(p.stdout)), 2)

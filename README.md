@@ -2,6 +2,57 @@
 
 Rust CLI for Google Colab GPU runtimes. Commands and shells share a local OpenSSH control socket, so multiple local terminals use one Colab connection. Uses Google's `google-colab-cli` 0.8.0 backend for OAuth, provisioning, file transfer, and SSH over WebSocket. No notebook worker cell, public tunnel, Google Cloud API key, or continuously running local server is needed.
 
+## Command tree
+
+```text
+Colab
+├── setup
+├── auth
+│   └── login
+├── session
+│   ├── create [NAME]
+│   ├── start
+│   ├── connect
+│   ├── disconnect
+│   ├── stop
+│   ├── list
+│   ├── status
+│   ├── attach
+│   └── url
+├── files
+│   ├── copy SRC DEST
+│   ├── sync SRC DIRECTION DEST
+│   └── targets
+├── drive
+│   └── mount
+├── exec COMMAND...
+└── run FILE [OPTIONS] -- [PROGRAM_ARGUMENTS]
+```
+
+`session create` allocates an independent runtime. `session start` prepares/reuses a runtime without entering a shell. `session connect` enters an interactive shell; `session disconnect` only closes the local SSH master; `session stop` terminates the runtime. `-s NAME` and `--no-auto-sync` are global flags and work before or after command groups. Use `Colab session --help`, `Colab files --help`, or a leaf's `--help` to inspect its options.
+
+## Build without installing
+
+From the repository directory containing `Cargo.toml`, build a development binary:
+
+```sh
+cargo build --locked
+./target/debug/Colab --help
+./target/debug/Colab setup
+./target/debug/Colab session create --runtime t4
+```
+
+For an optimized release binary:
+
+```sh
+cargo build --release --locked
+./target/release/Colab --help
+./target/release/Colab setup
+./target/release/Colab session connect
+```
+
+Both build commands leave the executable under `target/`; they do not install it or change PATH. Run it using the path above. Running `setup` afterward can install the Google backend and other runtime dependencies; the build itself does not do that. `cargo install --path . --locked` is a separate optional step if you want the `Colab` executable in Cargo's binary directory.
+
 ## Setup on a new machine
 
 Supported platforms are **macOS and Linux**. This implementation uses Unix sockets and OpenSSH; native Windows is not supported. You need internet access, a Google account with Colab access, and a browser for Google's consent screen. No local GPU, CUDA toolkit, Google Cloud project, service account, API key, or gcloud installation is required.
@@ -30,38 +81,40 @@ macOS uses Keychain. Linux needs an accessible, unlocked Secret Service keyring 
 ```sh
 Colab setup --check            # check prerequisites; no installs or login
 Colab setup --skip-login       # install dependencies, defer Google consent
-Colab login                    # verify cached login or guide fresh sign-in
-Colab login --no-browser       # print the URL for a remote/headless terminal
+Colab auth login                    # verify cached login or guide fresh sign-in
+Colab auth login --no-browser       # print the URL for a remote/headless terminal
 
-Colab create trainer --runtime t4
+Colab session create trainer --runtime t4
 Colab exec -s trainer nvidia-smi
-Colab mount-drive -s trainer    # optional; separate Google Drive consent
+Colab drive mount -s trainer    # recheck Drive/workspace; consent is separate from login
 ```
 
-After moving to a new machine, existing Colab runtime names may not be known locally. Use `Colab sessions` to discover endpoints and `Colab attach --endpoint ENDPOINT -s NAME` to adopt one, or use `create` for a fresh independent runtime. Disconnect the old PC's shared SSH connection first if you are reusing the same runtime from another PC.
+After moving to a new machine, existing Colab runtime names may not be known locally. Use `Colab session list` to discover endpoints and `Colab session attach --endpoint ENDPOINT -s NAME` to adopt one, or use `create` for a fresh independent runtime. Disconnect the old PC's shared SSH connection first if you are reusing the same runtime from another PC.
 
 ## Quickstart
 
 ```sh
-Colab start                  # reuse the existing T4 or provision one
+Colab session start                  # reuse the existing T4 or provision one
 Colab exec nvidia-smi
 Colab exec 'pwd && nvcc --version'
 Colab run ./kernel.cu -- arg1 arg2
-Colab shell                  # interactive remote Bash; exit to return
-Colab status
-Colab stop                   # releases the runtime
+Colab session connect                  # interactive remote Bash; exit to return
+Colab session status
+Colab session stop                   # releases the runtime
 ```
 
-`start` returns when the runtime is ready. `shell`, `exec`, and `run` also recover a missing or expired session automatically before submitting work: they adopt a matching active runtime, or provision one if none exists. Recovery retains the saved accelerator type, defaulting to T4 when no session metadata remains. Other commands work directly from any local terminal. Session metadata persists between commands. The default session name is `gpu-proxy`. Use `--session NAME` to work with another session. Create an independent runtime with `create NAME --runtime TYPE`; `start --runtime TYPE` can select hardware for a new session. `start --gpu T4` remains a legacy alias. Other GPUs depend on account entitlement and availability.
+`session create [NAME]` allocates an independent runtime. If NAME is omitted, it generates an unused adjective/adverb + noun name such as `BreezyMarble` or `MistyWillow`; names are preserved during recovery. `start` reuses the first active runtime when no `-s` is supplied, or generates a name and creates a runtime when none is open. Normal operations (`exec`, `shell`, `run`, copy/sync, status) select the first active session in the same order as `Colab session list`; use `--session NAME` / `-s NAME` to choose another. With no active sessions, operations report an actionable error instead of allocating unexpectedly. An explicitly named expired session can still be recovered with `-s`.
+
+Every created/used session mounts Drive, creates its working folder (default `~/Code` within **Google Drive**, meaning `/content/drive/MyDrive/Code`), and enters that folder for commands and shells. If a PC folder was configured, it is pushed to that working folder before each data operation. Runtime quota and Google consent requirements still apply.
 
 ```sh
-Colab sessions               # discover runtimes, including notebook runtimes
-Colab attach --endpoint ENDPOINT
-Colab url --open             # open the managed runtime in Colab
+Colab session list               # discover runtimes, including notebook runtimes
+Colab session attach --endpoint ENDPOINT
+Colab session url --open             # open the managed runtime in Colab
 printf 'hello\n' | Colab exec 'read x; echo "$x"'
 ```
 
-The current `gpu-proxy` session is attached to the T4 originally opened from [gpu-proxy.ipynb](https://colab.research.google.com/drive/1NXDWHf_SWF2uZy6JhX-IxxlDHjylcuKk). Opening the notebook is optional for CLI operation. `start` reuses a tracked session; when none exists, it adopts the only matching unclaimed runtime, or provisions one if none matches. Runtimes already assigned to another local session name are not silently adopted. Multiple matching runtimes require an explicit endpoint. `stop` terminates the attached runtime, including when it is also being used by the notebook.
+Opening a notebook is optional for CLI operation. Active runtimes discovered from a notebook are given generated local names when selected. Explicit `create` never silently reuses another session's endpoint; `attach` intentionally adopts a runtime. `stop` terminates the selected runtime, including when a notebook is using it. `disconnect` only closes the local SSH master; it selects the first active session when possible and falls back to the first locally recorded session if Google cannot be queried, so it can also work offline.
 
 ## Commands and input
 
@@ -133,7 +186,7 @@ cargo install --path . --locked
 Colab setup
 ```
 
-OAuth authorization is required once per Google account, or again if access is revoked. Google credentials are managed by the official CLI in the OS keyring. `Colab login` opens the browser when fresh authorization is needed and accepts Google's one-time authorization code; cached credentials are reused when valid. A dedicated local SSH key is created at `~/.config/Colab/id_ed25519` and used for runtime access. Session metadata is stored by the backend at `~/.config/colab-cli/sessions.json`. Do not share credentials or session state.
+OAuth authorization is required once per Google account, or again if access is revoked. Google credentials are managed by the official CLI in the OS keyring. `Colab auth login` opens the browser when fresh authorization is needed and accepts Google's one-time authorization code; cached credentials are reused when valid. A dedicated local SSH key is created at `~/.config/Colab/id_ed25519` and used for runtime access. Session metadata is stored by the backend at `~/.config/colab-cli/sessions.json`. Do not share credentials or session state.
 
 This is a Rust frontend backed by Google's Python CLI; `Colab`, `ssh`, and `ssh-keygen` must be on PATH. The Google backend is invoked through its Python module, avoiding a case-insensitive executable-name collision. `uv` is used for installation; runtime management uses the installed Google backend's Python interpreter so credentials remain accessible through the same Keychain identity. Colab quotas, runtime lifetime limits, and hardware availability still apply. There is no added Google Cloud billing project or API key.
 
@@ -147,7 +200,7 @@ Open as many local terminals as you need. A shared OpenSSH master keeps one WebS
 
 ```sh
 # Terminal 1
-Colab shell
+Colab session connect
 
 # Terminal 2, while the shell remains open
 Colab exec nvidia-smi
@@ -158,7 +211,7 @@ Colab run ./kernel.cu
 
 The connection starts automatically on the first command. A file lock prevents duplicate master connections when commands start simultaneously. Sockets live in `~/.config/Colab/mux/`, in a directory accessible only to your account, and are keyed by runtime endpoint so session aliases share one connection. A dead master or stale socket is replaced on the next command. Before opening a new transport, the CLI checks Google for an active assignment and refreshes runtime credentials. Connection-setup failures include the backend diagnostics; only HTTP 429 is described as a competing SSH connection. Commands already submitted are never retried automatically.
 
-The master exits after ten minutes with no active command channels. `Colab disconnect` closes it immediately, terminating any active channels but leaving the GPU runtime allocated. The next command reconnects automatically. `Colab stop` closes the master and releases the runtime. Standalone Google-backend SSH connections do not use these sockets; use `Colab` consistently across terminals.
+The master exits after ten minutes with no active command channels. `Colab session disconnect` closes it immediately, terminating any active channels but leaving the GPU runtime allocated. The next command reconnects automatically. `Colab session stop` closes the master and releases the runtime. Standalone Google-backend SSH connections do not use these sockets; use `Colab` consistently across terminals.
 
 This removes the single-connection conflict between CLI commands; concurrent channel counts are still bounded by the remote SSH server and the runtime's resources. Verified six simultaneous commands starting from no master, with isolated stdin, stdout/stderr and exit codes; reconnection after forcibly killed master/stale socket; and CUDA execution while an interactive shell remained open.
 
@@ -168,7 +221,7 @@ See [examples/README.md](examples/README.md) for runnable CUDA, C, C++, PTX, and
 
 ## Runtime recovery
 
-If Colab terminates a runtime, its local session record can become stale or be removed by `status`. Run `Colab shell`, `Colab exec COMMAND`, or `Colab run FILE` to recover it automatically. You can also run `Colab start` explicitly. Provisioning still depends on Google account quota and GPU availability; failures are reported before your command is submitted.
+If Colab terminates a runtime, its local session record can become stale or be removed by `status`. Use `Colab session connect -s NAME`, `Colab exec -s NAME COMMAND`, or `Colab run -s NAME FILE` to recover that named session. Unqualified commands select the first currently active session. With none active, run `Colab session create` or `Colab session start`. Provisioning still depends on Google account quota and GPU availability; failures are reported before your command is submitted.
 
 A replacement runtime has a fresh filesystem. `run` uploads the specified local source again; other remote files and installed packages must be restored separately. Recovery never retries a user command that may already have started.
 
@@ -177,7 +230,7 @@ Regression checks: `python3 -m unittest discover -s tests -v` and `cargo clippy 
 ## Google Drive storage
 
 ```sh
-Colab mount-drive
+Colab drive mount
 Colab exec 'ls /content/drive/MyDrive'
 ```
 
@@ -185,7 +238,7 @@ Colab exec 'ls /content/drive/MyDrive'
 
 Google may request browser consent before the mount can complete. The standard Drive filesystem integration requests broad account permissions, including permission to modify and delete Drive files; it is not a read-only mount. The CLI does not create or delete Drive files as part of mounting.
 
-Drive files persist when a Colab runtime is replaced, but the mount does not. After a successful `Colab mount-drive`, the CLI remembers that preference per session and checks/restores the mount on subsequent shell, execution, and transfer connections. Transfers targeting `/content/drive` also enable this preference. Google may require renewed browser consent on a replacement runtime; if so, the operation stops until consent is completed. Preferences are stored in `~/.config/Colab/drive/`.
+Drive files persist when a Colab runtime is replaced, but the mount does not. Every create/start, shell, execution, and transfer operation checks/restores the mount and the configured Drive workspace before running. Separate mounting is no longer an optional setup requirement. Google may require renewed browser consent on a replacement runtime; if so, the operation stops until consent is completed. Preferences are stored in `~/.config/Colab/drive/`.
 
 ## Recursive copy and sync
 
@@ -195,23 +248,23 @@ Prefix the remote endpoint with `colab:` and use an absolute runtime path. An un
 
 ```sh
 # Recursive upload and download; no -r flag needed.
-Colab cp ./data colab:/content/drive/MyDrive/data
-Colab cp colab:/content/drive/MyDrive/results ./results
+Colab files copy ./data colab:/content/drive/MyDrive/data
+Colab files copy colab:/content/drive/MyDrive/results ./results
 
 # Preview without modifying either data tree.
-Colab cp ./data colab:/content/drive/MyDrive/data --dry-run
+Colab files copy ./data colab:/content/drive/MyDrive/data --dry-run
 
 # Sync local → remote.
-Colab sync ./data '>' colab:/content/drive/MyDrive/data
+Colab files sync ./data '>' colab:/content/drive/MyDrive/data
 
 # Sync remote → local (the right endpoint is the source).
-Colab sync ./data '<' colab:/content/drive/MyDrive/data
+Colab files sync ./data '<' colab:/content/drive/MyDrive/data
 
 # Sync both directions.
-Colab sync ./data '<>' colab:/content/drive/MyDrive/data
+Colab files sync ./data '<>' colab:/content/drive/MyDrive/data
 
 # Preview the bidirectional plan.
-Colab sync ./data '<>' colab:/content/drive/MyDrive/data --dry-run
+Colab files sync ./data '<>' colab:/content/drive/MyDrive/data --dry-run
 ```
 
 **Quote the direction symbols.** Without quotes, your shell treats `>`, `<`, and `<>` as redirection operators instead of passing them to the CLI. Keep normal filesystem paths after the `colab:` prefix; `~` expansion is only supported for local paths. A session can be selected with `--session NAME`.
@@ -235,10 +288,10 @@ Bidirectional sync baselines and pair locks live in `~/.config/Colab/sync/`. Kee
 ### List recorded sync targets
 
 ```sh
-Colab sync-targets                  # current session's recorded pairs
-Colab sync-targets --all-sessions   # every session
-Colab sync-targets --json           # machine-readable output
-Colab --session other sync-targets # a particular session
+Colab files targets                  # all recorded pairs, locally (no Google connection)
+Colab files targets --all-sessions   # every session
+Colab files targets --json           # machine-readable output
+Colab --session other files targets # a particular session
 ```
 
 This command is local and works when Colab is disconnected. It shows each pair, the last successful direction, and the last successful sync time in UTC. Successful syncs (including one-way syncs and unchanged runs) register/update their pair automatically. Failed attempts, dry runs, and plain copies do not register successful sync targets. These are remembered one-shot sync pairs, not background synchronization jobs.
@@ -248,30 +301,80 @@ Target metadata is stored next to baselines in `~/.config/Colab/sync/*.target.js
 ## Create independent named sessions
 
 ```sh
-Colab create trainer --runtime t4
-Colab create preprocessing --runtime cpu
-Colab create experiments --runtime a100 --high-mem
+Colab session create trainer --runtime t4
+Colab session create preprocessing --runtime cpu
+Colab session create experiments --runtime a100 --high-mem
 
 # Select the desired session on every operation (before or after the command).
-Colab shell -s trainer
+Colab session connect -s trainer
 Colab exec -s preprocessing 'uname -a'
 Colab run -s trainer examples/vector_add.cu -- 4096
-Colab cp -s trainer ./data colab:/content/data
-Colab sync -s trainer ./data '>' colab:/content/data
-Colab mount-drive -s trainer
-Colab sessions
-Colab disconnect -s trainer
-Colab stop -s trainer
+Colab files copy -s trainer ./data colab:/content/data
+Colab files sync -s trainer ./data '>' colab:/content/data
+Colab drive mount -s trainer
+Colab session list
+Colab session disconnect -s trainer
+Colab session stop -s trainer
 ```
 
-`create NAME` requires a name and always requests a **separate runtime**, even when another runtime of the same type exists. Duplicate local names are rejected; use `start -s NAME` to reuse or recover an existing session. Names may contain 1–64 ASCII letters, digits, dots, underscores, or hyphens. The default session for commands without `-s` remains `gpu-proxy`.
+`session create [NAME]` always requests a **separate runtime**, even when another runtime of the same type exists. Omit NAME for an unused two-word generated name (e.g. `SunnyRiver`); supply NAME or `-s NAME` for an explicit name. Duplicate local names are rejected; use `session start -s NAME` to reuse or recover an existing session. Names may contain 1–64 ASCII letters, digits, dots, underscores, or hyphens. There is no hardcoded default session name. Operations without `-s` use the first active session.
 
 `--runtime` accepts `cpu`, `t4`, `l4`, `g4`, `h100`, `a100`, `v5e1`, and `v6e1` (case-insensitive). `v5e-1` and `v6e-1` are accepted TPU aliases. New sessions default to `t4`. `--high-mem` requests high-RAM hardware when supported; Google's backend may ignore it for hardware with a fixed memory shape. Accelerator and high-memory availability, plus the number of concurrent sessions, depend on Google's account entitlements, quota, and capacity. This CLI cannot raise those limits.
 
-Runtime choices are saved per name in `~/.config/Colab/runtimes.json`, separately from Google's expiring assignment metadata. `start -s NAME` and automatic recovery retain the selected accelerator and memory setting even if `status` prunes an expired session. Specifying a different runtime for an active session is rejected; create a new name to use different hardware. Allocation and registry changes are serialized locally so concurrent create/recovery calls do not overwrite each other's session metadata.
+Runtime choices are saved per name in `~/.config/Colab/runtimes.json`, separately from Google's expiring assignment metadata. `session start -s NAME` and automatic recovery retain the selected accelerator and memory setting even if `status` prunes an expired session. Specifying a different runtime for an active session is rejected; create a new name to use different hardware. Allocation and registry changes are serialized locally so concurrent create/recovery calls do not overwrite each other's session metadata.
 
 Drive preferences and sync histories are scoped by session name. Each independent endpoint gets its own shared SSH transport. `attach --endpoint ENDPOINT -s NAME` intentionally reuses an existing runtime; use `create` for independent resources.
 
 ## Project identity
 
 The repository directory, Cargo package, and executable are named `Colab`. App-owned settings and the SSH key live under `~/.config/Colab/`. Google-owned technical identifiers (`google-colab-cli`, `colab_cli`, `~/.config/colab-cli`) and the `colab:` remote-path protocol retain their upstream names. Setup installs the backend launcher privately under `~/.config/Colab/backend/bin/` and invokes the backend through its Python module, so it does not shadow the `Colab` executable on case-insensitive filesystems.
+
+## Drive workspaces and automatic PC-to-Colab sync
+
+```sh
+# Generated session name, Drive ~/Code workspace, T4 by default.
+Colab session create
+
+# Explicit name and another folder within My Drive.
+Colab session create trainer --runtime t4 --drive-path '~/Code/Trainer'
+
+# Push this PC directory into the Drive workspace before operations.
+Colab session create trainer --runtime t4 --drive-path '~/Code/Trainer' --local-dir ~/Code/my-project
+
+Colab exec pwd               # first active session; mount/check workspace, then run
+Colab session connect -s trainer       # sync PC folder first, then enter Drive workspace
+Colab exec -s trainer 'ls'   # sync PC folder again before executing
+
+# Deliberately skip the automatic PC push for one operation (still mount Drive).
+Colab --no-auto-sync exec -s trainer 'ls'
+Colab --no-auto-sync files copy -s trainer colab:/content/drive/MyDrive/Code/Trainer/results ./results
+```
+
+`--drive-path` is interpreted in Google Drive, not the PC filesystem: `~/Code`, `Code`, `MyDrive/Code`, and `/content/drive/MyDrive/Code` refer to the same place. Missing folders are created. Absolute paths must be under `/content/drive`; parent traversal (`..`) is rejected. Configuration is per named session in `~/.config/Colab/workspaces/`. Existing sessions without saved workspace settings default to Google Drive `~/Code`.
+
+`--local-dir` enables a one-way **PC → Colab** sync into that workspace. It runs before create completes, before `exec`/`run`, before opening a shell, and before explicit copy/sync operations. It is an operation-boundary sync, not a continuous filesystem mount or watcher. Matching remote files are replaced by PC changes; extra remote files are preserved. If local files disappear or a transfer fails, the remote command/shell does not start. Use `--no-auto-sync` when retrieving remote edits that should not first be overwritten by the PC version. To keep independent projects apart, give their sessions different Drive working folders.
+
+All workspace and sync steps complete before the requested user command is submitted. Google may still require renewed browser consent after a runtime replacement. If workspace setup fails after a runtime was allocated, the error names that session and explains how to finish with `Colab drive mount -s NAME`; it does not silently allocate another session or execute in the wrong directory.
+
+## Readable failures
+
+Normal runtime commands never start an unexpected OAuth prompt or consume program stdin for login. They say `Run Colab auth login` when credentials are missing or expired. Fresh local state directories are created before Google's session/lock code runs. Backend failures are translated to short errors for missing login, Internet/connectivity problems, denied access, and session/quota/capacity limits. A quota/precondition rejection does not necessarily mean multiple sessions are universally prohibited: eligibility and capacity are controlled by Google. Stop an unused session, choose CPU, or retry later as the message suggests.
+
+Python and Typer exceptions are handled at the subprocess boundary; chained backend tracebacks are not printed in normal operation. Explicit `Colab auth login`/`setup` still guide Google's consent flow. Interrupted user commands are never automatically replayed. The tests cover a fresh HOME with the installed Google backend, missing login without prompts, offline errors, quota errors, server-order default selection, generated names, and workspace/pre-execution sync.
+
+## Compatibility with earlier commands
+
+The previous flat spellings remain accepted as hidden compatibility aliases, but help and examples use the grouped tree:
+
+| Earlier spelling | Current command |
+| --- | --- |
+| `Colab login` | `Colab auth login` |
+| `Colab create` / `start` / `sessions` / `status` | `Colab session create` / `start` / `list` / `status` |
+| `Colab shell` | `Colab session connect` |
+| `Colab disconnect` / `stop` / `attach` / `url` | `Colab session disconnect` / `stop` / `attach` / `url` |
+| `Colab cp` | `Colab files copy` (`files cp` is also accepted) |
+| `Colab sync` | `Colab files sync` |
+| `Colab sync-targets` | `Colab files targets` |
+| `Colab mount-drive` | `Colab drive mount` |
+
+`exec`, `run`, and `setup` retain their direct spellings because they are the primary execution and bootstrap actions.

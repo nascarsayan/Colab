@@ -3,7 +3,7 @@
 Run these commands from the project directory (`~/Code/gpu-learning/Colab`). First ensure a runtime is available:
 
 ```sh
-Colab start
+Colab session start
 ```
 
 | Language | File | What it demonstrates | Expected result |

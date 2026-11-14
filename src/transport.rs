@@ -12,13 +12,13 @@ fn socket_path(session: &str) -> Result<PathBuf> {
     let home = PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?);
     let state: serde_json::Value = serde_json::from_slice(
         &fs::read(home.join(".config/colab-cli/sessions.json"))
-            .context("No Colab session state; run Colab start")?,
+            .context("No Colab session state; run Colab session start")?,
     )?;
     let endpoint = state
         .get(session)
         .and_then(|s| s.get("endpoint"))
         .and_then(|v| v.as_str())
-        .context("Session not found; run Colab start")?;
+        .context("Session not found; run Colab session start")?;
     // Key by endpoint so aliases for the same runtime share one transport too.
     let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, endpoint.as_bytes())
         .simple()
@@ -104,8 +104,9 @@ pub fn connect(session: &str) -> Result<PathBuf> {
         interpreter
             .to_str()
             .context("Backend interpreter path is not UTF-8")?,
-        "-m",
-        "colab_cli.cli",
+        "-c",
+        include_str!("runner.py"),
+        crate::BACKEND_CLI,
         "--auth",
         "oauth2",
         "ssh",
@@ -160,7 +161,7 @@ pub fn connect(session: &str) -> Result<PathBuf> {
         let hint = if details.contains("429") {
             "Google rejected an additional SSH connection. Close standalone `colab ssh` connections and retry."
         } else {
-            "The connection failed before your command was submitted. Run `Colab start` to check runtime availability and authentication."
+            "The connection failed before your command was submitted. Run `Colab session start` to check runtime availability and authentication."
         };
         bail!(
             "Could not establish shared SSH transport ({status}). {hint}\n{}\nDiagnostics: {}",

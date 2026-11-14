@@ -73,8 +73,8 @@ fn install_uv() -> Result<()> {
     Ok(())
 }
 pub fn login(no_browser: bool) -> Result<()> {
-    let mut process = Command::new(crate::backend_interpreter()?);
-    process.args(["-c", include_str!("login.py")]);
+    let mut process = crate::script_command(include_str!("login.py"))?;
+    process.env("COLAB_ALLOW_LOGIN", "1");
     if no_browser {
         process.arg("--no-browser");
     }
@@ -97,7 +97,7 @@ pub fn run(check: bool, skip_login: bool, no_browser: bool) -> Result<()> {
         if version.as_deref() != Some("0.8.0") {
             bail!("Google backend is missing or incompatible ({version:?}); run Colab setup")
         }
-        println!("Google backend: 0.8.0\nPrerequisites ready. Login was not checked; use Colab login to verify it.");
+        println!("Google backend: 0.8.0\nPrerequisites ready. Login was not checked; use Colab auth login to verify it.");
         return Ok(());
     }
     if version.as_deref() != Some("0.8.0") {
@@ -128,8 +128,8 @@ pub fn run(check: bool, skip_login: bool, no_browser: bool) -> Result<()> {
     if !skip_login {
         login(no_browser)?;
     } else {
-        println!("Login skipped. Run Colab login when ready.");
+        println!("Login skipped. Run Colab auth login when ready.");
     }
-    println!("Setup complete. Create a runtime with: Colab create trainer --runtime t4");
+    println!("Setup complete. Create a runtime with: Colab session create trainer --runtime t4");
     Ok(())
 }

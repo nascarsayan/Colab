@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+(Path.home() / '.config/colab-cli').mkdir(parents=True, exist_ok=True)
 from colab_cli.common import state
 from colab_cli.state import SessionState
 from colab_cli.commands.session import new
@@ -32,7 +33,7 @@ high_mem = (memory_option == 'true') if memory_option else (
 
 
 def remember():
-    settings[name] = {'runtime': runtime, 'high_mem': high_mem}
+    settings[name] = {**settings.get(name, {}), 'runtime': runtime, 'high_mem': high_mem}
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode='w', dir=settings_path.parent, delete=False) as out:
         json.dump(settings, out, sort_keys=True)
@@ -95,8 +96,8 @@ if len(candidates) == 1:
     remember()
     print(f'Attached {name} to existing runtime {a.endpoint}')
 elif action == 'attach':
-    raise SystemExit('Specify an unambiguous unclaimed runtime endpoint using --endpoint; see Colab sessions.')
+    raise SystemExit('Specify an unambiguous unclaimed runtime endpoint using --endpoint; see Colab session list.')
 elif candidates:
-    raise SystemExit('Multiple matching unclaimed runtimes; use Colab attach --endpoint ENDPOINT.')
+    raise SystemExit('Multiple matching unclaimed runtimes; use Colab session attach --endpoint ENDPOINT.')
 else:
     allocate()

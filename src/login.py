@@ -30,7 +30,7 @@ try:
         raise RuntimeError('Google sign-in worked, but credentials were not saved. Configure your OS keyring and retry login.')
     print(f'Google login verified; credentials saved in OS keyring. Active runtimes: {len(assignments)}')
 except EOFError:
-    print('Login needs an interactive terminal. Run Colab login, approve Google consent, then paste the displayed authorization code.', file=sys.stderr)
+    print('Login needs an interactive terminal. Run Colab auth login, approve Google consent, then paste the displayed authorization code.', file=sys.stderr)
     sys.exit(1)
 except Exception as exc:
     print(f'Google login failed: {exc}', file=sys.stderr)

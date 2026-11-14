@@ -1,6 +1,6 @@
 #![allow(non_snake_case)] // The executable is intentionally named Colab.
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, ValueEnum};
 use fs2::FileExt;
 use std::{
     ffi::OsStr,
@@ -9,119 +9,10 @@ use std::{
     process::{Command as Process, ExitStatus},
 };
 
-#[derive(Parser)]
-#[command(
-    version,
-    about = "Run GPU code and shell commands through Google's authenticated Colab backend"
-)]
-struct Cli {
-    #[arg(short, long, global = true, default_value = "gpu-proxy", value_parser = parse_name)]
-    session: String,
-    #[command(subcommand)]
-    command: Command,
-}
-#[derive(Subcommand)]
-enum Command {
-    /// Install prerequisites and guide Google login (does not allocate a runtime).
-    Setup {
-        #[arg(long, conflicts_with = "skip_login")]
-        check: bool,
-        #[arg(long)]
-        skip_login: bool,
-        #[arg(long)]
-        no_browser: bool,
-    },
-    /// Google login: opens the browser, then accepts Google's authorization code.
-    Login {
-        #[arg(long)]
-        no_browser: bool,
-    },
-    /// Create a new independent runtime; the session name is required.
-    Create {
-        #[arg(value_parser = parse_name)]
-        name: String,
-        #[arg(long, value_enum, ignore_case = true, default_value = "t4")]
-        runtime: Runtime,
-        #[arg(long)]
-        high_mem: bool,
-    },
-    /// Reuse/recover a named session, or allocate an unclaimed runtime.
-    Start {
-        #[arg(long, value_enum, ignore_case = true, conflicts_with = "gpu")]
-        runtime: Option<Runtime>,
-        #[arg(
-            long,
-            value_enum,
-            ignore_case = true,
-            help = "Legacy alias for --runtime"
-        )]
-        gpu: Option<Runtime>,
-        #[arg(long)]
-        high_mem: bool,
-    },
-    /// Adopt an existing runtime, including one opened from a notebook.
-    Attach {
-        #[arg(long)]
-        endpoint: Option<String>,
-        #[arg(long, default_value = "T4")]
-        gpu: String,
-    },
-    /// Execute a shell command remotely, forwarding stdin/stdout/stderr and exit status.
-    Exec {
-        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
-        command: Vec<String>,
-    },
-    /// Open an interactive SSH terminal, recovering an expired runtime if needed.
-    Shell,
-    /// Upload, compile, and execute a CUDA, C/C++, shell, or PTX source file.
-    Run {
-        file: PathBuf,
-        #[arg(long, default_value = "main")]
-        entry: String,
-        #[arg(long, default_value="1,1,1", value_parser=parse_dims)]
-        grid: String,
-        #[arg(long, default_value="1,1,1", value_parser=parse_dims)]
-        block: String,
-        #[arg(last = true)]
-        args: Vec<String>,
-    },
-    /// Recursively copy between a local path and colab:/absolute/path.
-    Cp {
-        src: String,
-        dest: String,
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Sync directories: quote the direction operator: '>', '<', or '<>'.
-    Sync {
-        src: String,
-        direction: String,
-        dest: String,
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// List recorded sync pairs locally, without connecting to Google.
-    SyncTargets {
-        #[arg(long)]
-        all_sessions: bool,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Mount Google Drive at /content/drive, reusing an existing mount.
-    MountDrive,
-    Status,
-    Sessions,
-    Stop,
-    /// Close the shared local SSH connection without stopping the GPU runtime.
-    Disconnect,
-    /// Print the runtime URL, optionally opening it in the browser.
-    Url {
-        #[arg(long)]
-        open: bool,
-    },
-}
+mod cli;
+use cli::{Cli, Operation as Command};
 #[derive(Clone, Copy, ValueEnum)]
-enum Runtime {
+pub(crate) enum Runtime {
     Cpu,
     T4,
     L4,
@@ -209,23 +100,28 @@ fn identity() -> Result<PathBuf> {
     Ok(key)
 }
 mod drive;
+mod sessions;
 mod setup;
 mod targets;
 mod transport;
-fn ssh(session: &str, command: Option<&str>) -> Result<()> {
-    let socket = transport::connect(session)?;
+mod workspace;
+fn execute_on(socket: &Path, cwd: &str, command: Option<&str>) -> Result<()> {
     let remote = format!(
-        "cd /content && export PATH=/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin:$PATH; {}",
+        "cd {} && export PATH=/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin:$PATH && {{\n{}\n}}",
+        quote(cwd),
         command.unwrap_or("exec bash -i")
     );
     let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let status = transport::client(&socket)
+    let status = transport::client(socket)
         .arg(if tty { "-t" } else { "-T" })
         .args(["root@colab-runtime", &remote])
         .status()
-        .context("opening a channel on the shared Colab connection")?;
-    // Never retry an executed command automatically: it may have had side effects.
+        .context("opening a remote command channel")?;
     finish(status)
+}
+fn ssh(session: &str, command: Option<&str>, auto_sync: bool) -> Result<()> {
+    let (socket, cwd) = workspace::prepare(session, auto_sync)?;
+    execute_on(&socket, &cwd, command)
 }
 fn find_executable(name: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
@@ -265,9 +161,16 @@ fn backend_interpreter() -> Result<PathBuf> {
     }
     bail!("Google backend not installed; run Colab setup")
 }
-fn backend_command() -> Result<Process> {
+const BACKEND_CLI: &str =
+    "from colab_cli.cli import app\napp.pretty_exceptions_enable=False\napp(standalone_mode=False)";
+fn script_command(source: &str) -> Result<Process> {
     let mut command = Process::new(backend_interpreter()?);
-    command.args(["-m", "colab_cli.cli", "--auth", "oauth2"]);
+    command.args(["-c", include_str!("runner.py"), source]);
+    Ok(command)
+}
+fn backend_command() -> Result<Process> {
+    let mut command = script_command(BACKEND_CLI)?;
+    command.args(["--auth", "oauth2"]);
     Ok(command)
 }
 
@@ -292,11 +195,8 @@ fn manage(
         .truncate(false)
         .open(dir.join("allocation.lock"))?;
     guard.lock_exclusive()?;
-    let interpreter = backend_interpreter()?;
-    let mut p = Process::new(interpreter);
+    let mut p = script_command(include_str!("backend.py"))?;
     p.args([
-        "-c",
-        include_str!("backend.py"),
         action,
         session,
         runtime,
@@ -316,6 +216,7 @@ fn transfer(
     direction: &str,
     dest: &str,
     dry_run: bool,
+    auto_sync: bool,
 ) -> Result<()> {
     let remote_paths: Vec<&str> = [src, dest]
         .iter()
@@ -330,19 +231,22 @@ fn transfer(
     if !remote_paths[0].starts_with('/') {
         bail!("Remote paths must be absolute, for example colab:/content/data")
     }
-    // Never populate the ephemeral mount directory if Drive authorization failed.
-    if [src, dest].iter().any(|p| {
-        ["colab:/content/drive", "collab:/content/drive"]
-            .iter()
-            .any(|prefix| *p == *prefix || p.starts_with(&format!("{prefix}/")))
-    }) {
-        drive::mount(session)?;
-    }
-    let socket = transport::connect(session)?;
+    let (socket, _) = workspace::prepare(session, auto_sync)?;
+    transfer_on(&socket, session, action, src, direction, dest, dry_run)
+}
+fn transfer_on(
+    socket: &Path,
+    session: &str,
+    action: &str,
+    src: &str,
+    direction: &str,
+    dest: &str,
+    dry_run: bool,
+) -> Result<()> {
     let home = std::env::var_os("HOME").context("HOME is unset")?;
     let state = Path::new(&home).join(".config/Colab");
-    let status = Process::new(backend_interpreter()?)
-        .args(["-c", include_str!("files.py"), include_str!("file_rpc.py")])
+    let status = script_command(include_str!("files.py"))?
+        .arg(include_str!("file_rpc.py"))
         .arg(socket)
         .arg(state)
         .args([
@@ -357,11 +261,47 @@ fn transfer(
         .context("running recursive file transfer")?;
     finish(status)
 }
-fn main() -> Result<()> {
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("Error: {error:#}");
+        std::process::exit(1);
+    }
+}
+fn run() -> Result<()> {
     setup::prepare_path()?;
     let c = Cli::parse();
-    let s = &c.session;
-    match c.command {
+    let command = c.command.operation();
+    let explicit = c.session.as_deref();
+    let auto_sync = !c.no_auto_sync;
+    // Selection is deliberately skipped for setup/login/listing and explicit creation.
+    let selected = match &command {
+        Command::Setup { .. }
+        | Command::Login { .. }
+        | Command::Sessions
+        | Command::Create { .. }
+        | Command::SyncTargets { .. } => String::new(),
+        Command::Attach { .. } => explicit
+            .map(str::to_owned)
+            .map(Ok)
+            .unwrap_or_else(sessions::generated)?,
+        Command::Disconnect => match sessions::select(explicit, false) {
+            Ok(name) => name,
+            Err(error) => {
+                if let Some(name) = sessions::local_first()? {
+                    eprintln!("Could not check active sessions ({error}); disconnecting locally recorded session {name}.");
+                    name
+                } else {
+                    return Err(error);
+                }
+            }
+        },
+        _ => sessions::select(
+            explicit,
+            matches!(&command, Command::Start { .. } | Command::Attach { .. }),
+        )?,
+    };
+    let s = selected.as_str();
+    match command {
         Command::Setup {
             check,
             skip_login,
@@ -372,19 +312,40 @@ fn main() -> Result<()> {
             name,
             runtime,
             high_mem,
-        } => manage("create", &name, runtime.backend(), None, Some(high_mem)),
+            drive_path,
+            local_dir,
+        } => {
+            let name = name
+                .or_else(|| explicit.map(str::to_owned))
+                .map(Ok)
+                .unwrap_or_else(sessions::generated)?;
+            let cfg = workspace::options(Some(&drive_path), local_dir.as_deref())?;
+            manage("create", &name, runtime.backend(), None, Some(high_mem))?;
+            workspace::save(&name, &cfg)?;
+            workspace::prepare(&name, auto_sync).with_context(||format!("Session {name} was created, but its workspace is not ready. Run Colab drive mount -s {name} to finish setup"))?;
+            println!("Session {name} ready in {}", cfg.remote);
+            Ok(())
+        }
         Command::Start {
             runtime,
             gpu,
             high_mem,
-        } => manage(
-            "start",
-            s,
-            runtime.or(gpu).map(Runtime::backend).unwrap_or(""),
-            None,
-            if high_mem { Some(true) } else { None },
-        ),
-        Command::Attach { endpoint, gpu } => ensure("attach", s, &gpu, endpoint.as_deref()),
+        } => {
+            manage(
+                "start",
+                s,
+                runtime.or(gpu).map(Runtime::backend).unwrap_or(""),
+                None,
+                if high_mem { Some(true) } else { None },
+            )?;
+            workspace::prepare(s, auto_sync)?;
+            Ok(())
+        }
+        Command::Attach { endpoint, gpu } => {
+            ensure("attach", s, &gpu, endpoint.as_deref())?;
+            workspace::prepare(s, auto_sync)?;
+            Ok(())
+        }
         Command::Exec { command } => {
             // A single argument is a shell line; multiple arguments are an exact argv.
             let line = if command.len() == 1 {
@@ -396,12 +357,22 @@ fn main() -> Result<()> {
                     .collect::<Vec<_>>()
                     .join(" ")
             };
-            ssh(s, Some(&line))
+            ssh(s, Some(&line), auto_sync)
         }
-        Command::Shell => ssh(s, None),
-        Command::SyncTargets { all_sessions, json } => targets::list(s, all_sessions, json),
-        Command::MountDrive => drive::mount(s),
-        Command::Cp { src, dest, dry_run } => transfer(s, "cp", &src, ">", &dest, dry_run),
+        Command::Shell => ssh(s, None, auto_sync),
+        Command::SyncTargets { all_sessions, json } => targets::list(
+            explicit.unwrap_or(""),
+            all_sessions || explicit.is_none(),
+            json,
+        ),
+        Command::MountDrive => {
+            let (_, cwd) = workspace::prepare(s, auto_sync)?;
+            println!("Google Drive workspace ready: {cwd}");
+            Ok(())
+        }
+        Command::Cp { src, dest, dry_run } => {
+            transfer(s, "cp", &src, ">", &dest, dry_run, auto_sync)
+        }
         Command::Sync {
             src,
             direction,
@@ -411,7 +382,7 @@ fn main() -> Result<()> {
             if ![">", "<", "<>"].contains(&direction.as_str()) {
                 bail!("Direction must be quoted: '>', '<', or '<>'")
             }
-            transfer(s, "sync", &src, &direction, &dest, dry_run)
+            transfer(s, "sync", &src, &direction, &dest, dry_run, auto_sync)
         }
         Command::Status => backend(["status", "-s", s]),
         Command::Sessions => backend(["sessions"]),
@@ -448,7 +419,7 @@ fn main() -> Result<()> {
             let prefix = format!("/tmp/Colab-{}", uuid::Uuid::new_v4());
             let remote = format!("{prefix}.{ext}");
             // Recover an expired runtime before uploading to it.
-            transport::connect(s)?;
+            let (socket, cwd) = workspace::prepare(s, auto_sync)?;
             backend([
                 OsStr::new("upload"),
                 OsStr::new("-s"),
@@ -477,7 +448,7 @@ fn main() -> Result<()> {
                     quote(&prefix)
                 )
             };
-            ssh(s, Some(&command))
+            execute_on(&socket, &cwd, Some(&command))
         }
     }
 }

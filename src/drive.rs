@@ -34,10 +34,12 @@ fn mount_on(socket: &Path, session: &str) -> Result<()> {
     let stderr = std::io::stderr().as_fd().try_clone_to_owned()?;
     let status = crate::backend_command()?
         .args(["drivemount", "-s", session])
+        // Consent can use /dev/tty; never consume stdin intended for a program.
+        .stdin(Stdio::null())
         .stdout(Stdio::from(stderr))
         .status()?;
     if !status.success() || !mounted(socket)? {
-        bail!("Google Drive is not mounted. Complete Google's consent using `Colab mount-drive` before retrying; no transfer was started.")
+        bail!("Google Drive is not mounted. Complete Google's consent using `Colab drive mount -s {session}` before retrying; no transfer was started.")
     }
     Ok(())
 }
@@ -47,12 +49,11 @@ pub fn restore(socket: &Path, session: &str) -> Result<()> {
     }
     Ok(())
 }
-pub fn mount(session: &str) -> Result<()> {
+pub fn ready(session: &str) -> Result<PathBuf> {
     let socket = crate::transport::connect(session)?;
     mount_on(&socket, session)?;
     let path = preference(session)?;
     fs::create_dir_all(path.parent().context("Drive preference parent")?)?;
     fs::write(path, b"restore Google Drive when reconnecting\n")?;
-    eprintln!("Google Drive ready: /content/drive/MyDrive (automatic restoration enabled)");
-    Ok(())
+    Ok(socket)
 }
