@@ -67,7 +67,7 @@ pub fn list_accounts(
                 "[{}{}] {} {} {}\n  Last successful sync (UTC): {}",
                 r["account"]
                     .as_str()
-                    .map(|a| format!("{a} / "))
+                    .map(|a| format!("{} / ", crate::accounts::display(a)))
                     .unwrap_or_default(),
                 r["session"].as_str().unwrap_or("?"),
                 r["left"].as_str().unwrap_or("?"),

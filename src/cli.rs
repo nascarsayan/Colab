@@ -1,5 +1,5 @@
 //! Public command hierarchy. Hidden flat aliases map to the same operations.
-use crate::{parse_dims, parse_name, Runtime};
+use crate::{parse_account, parse_dims, parse_name, Runtime};
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -11,8 +11,8 @@ use std::path::PathBuf;
 pub(crate) struct Cli {
     #[arg(short,long,global=true,value_parser=parse_name)]
     pub session: Option<String>,
-    /// Google account email; required for operations on a single runtime.
-    #[arg(short, long, global = true)]
+    /// Gmail username or full email; overrides the default or named session owner.
+    #[arg(short, long, global = true, value_parser=parse_account)]
     pub account: Option<String>,
     /// Skip the configured PC-to-Colab sync for this operation.
     #[arg(long, global = true)]
@@ -86,6 +86,17 @@ pub(crate) enum Tree {
 pub(crate) enum AuthCommand {
     /// List saved Google accounts.
     List,
+    /// Set the default Google account used for single-account operations.
+    #[command(alias = "use")]
+    Default {
+        #[arg(value_name="ACCOUNT",value_parser=parse_account)]
+        email: String,
+    },
+    /// Sign out locally; omit TARGET for the default account, or use all.
+    Logout {
+        #[arg(value_parser = ["all"])]
+        target: Option<String>,
+    },
     /// Sign in or verify cached credentials; opens Google consent when needed.
     Login(LoginArgs),
 }
@@ -102,9 +113,17 @@ pub(crate) enum SessionCommand {
     Disconnect,
     /// Delete the runtime and release its resources; preserve Google Drive files.
     #[command(alias = "stop")]
-    Delete,
+    Delete {
+        #[arg(value_parser=parse_name)]
+        target: Option<String>,
+    },
     /// List active runtimes across saved accounts; --account filters.
-    List,
+    List {
+        #[arg(long, conflicts_with = "json")]
+        details: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show runtime status across accounts; --account and --session filter.
     Status,
     /// Adopt an existing runtime by its backend endpoint.
@@ -147,6 +166,9 @@ pub(crate) struct CreateArgs {
     /// Working folder in Google Drive; ~/ refers to My Drive.
     #[arg(long, default_value = "~/Code")]
     drive_path: String,
+    /// Folder directly under /content; defaults to the Drive folder's final name.
+    #[arg(long)]
+    mount_path: Option<String>,
     /// PC folder to push into the workspace before operations.
     #[arg(long)]
     local_dir: Option<PathBuf>,
@@ -227,12 +249,19 @@ pub(crate) enum Operation {
         json: bool,
     },
     AuthList,
+    AuthDefault {
+        email: String,
+    },
+    Logout {
+        all: bool,
+    },
     Login {
         no_browser: bool,
     },
     Create {
         name: Option<String>,
         drive_path: String,
+        mount_path: Option<String>,
         local_dir: Option<PathBuf>,
         runtime: Runtime,
         high_mem: bool,
@@ -274,8 +303,13 @@ pub(crate) enum Operation {
     },
     MountDrive,
     Status,
-    Sessions,
-    Stop,
+    Sessions {
+        json: bool,
+        details: bool,
+    },
+    Stop {
+        target: Option<String>,
+    },
     Disconnect,
     Url {
         open: bool,
@@ -292,6 +326,14 @@ impl Tree {
                 command: AuthCommand::List,
             } => O::AuthList,
             Self::Auth {
+                command: AuthCommand::Default { email },
+            } => O::AuthDefault { email },
+            Self::Auth {
+                command: AuthCommand::Logout { target },
+            } => O::Logout {
+                all: target.is_some(),
+            },
+            Self::Auth {
                 command: AuthCommand::Login(a),
             } => Self::Login(a).operation(),
             Self::Session { command } => match command {
@@ -299,8 +341,8 @@ impl Tree {
                 SessionCommand::Start(a) => Self::Start(a).operation(),
                 SessionCommand::Shell => O::Shell,
                 SessionCommand::Disconnect => O::Disconnect,
-                SessionCommand::Delete => O::Stop,
-                SessionCommand::List => O::Sessions,
+                SessionCommand::Delete { target } => O::Stop { target },
+                SessionCommand::List { json, details } => O::Sessions { json, details },
                 SessionCommand::Status => O::Status,
                 SessionCommand::Attach(a) => Self::Attach(a).operation(),
                 SessionCommand::Url(a) => Self::Url(a).operation(),
@@ -319,6 +361,7 @@ impl Tree {
             Self::Create(a) => O::Create {
                 name: a.name,
                 drive_path: a.drive_path,
+                mount_path: a.mount_path,
                 local_dir: a.local_dir,
                 runtime: a.runtime,
                 high_mem: a.high_mem,
@@ -358,8 +401,11 @@ impl Tree {
             Self::Shell => O::Shell,
             Self::MountDrive => O::MountDrive,
             Self::Status => O::Status,
-            Self::Sessions => O::Sessions,
-            Self::Stop => O::Stop,
+            Self::Sessions => O::Sessions {
+                json: false,
+                details: false,
+            },
+            Self::Stop => O::Stop { target: None },
             Self::Disconnect => O::Disconnect,
             Self::Url(a) => O::Url { open: a.open },
         }

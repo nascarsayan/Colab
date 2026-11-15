@@ -8,14 +8,16 @@ Rust CLI for Google Colab GPU runtimes. Commands and shells share a local OpenSS
 Colab
 ├── auth
 │   ├── login
-│   └── list
+│   ├── list
+│   ├── default EMAIL
+│   └── logout [all]
 ├── session
 │   ├── create [NAME]
 │   ├── start
 │   ├── shell
 │   ├── disconnect
-│   ├── delete
-│   ├── list
+│   ├── delete [NAME|all]
+│   ├── list [--details|--json]
 │   ├── status
 │   ├── attach
 │   └── url
@@ -93,44 +95,79 @@ After moving to a new machine, existing Colab runtime names may not be known loc
 
 ## Multiple Google accounts
 
-Dependencies install automatically on the first online command, and missing, broken, or incompatible Python backend dependencies are repaired automatically. There is no `setup` command. Help, runtime types, saved accounts, and sync-target listings work offline. OpenSSH must be available through the operating system; on Linux install `openssh-client` if absent. The managed Python/backend version is pinned for compatibility; repair upgrades older installations to that version rather than installing untested upstream releases.
+Dependencies install automatically on the first online command, and missing, broken, or incompatible Python backend dependencies are repaired automatically. There is no `setup` command. Help, runtime types, saved account metadata, and sync-target listings work offline. If the account registry is missing, `auth list` and commands that need authentication check existing keyring/legacy credentials and migrate them automatically, without opening a browser or prompting for input. Discovering an unknown cached email requires Google's userinfo endpoint, so that first discovery needs internet access. An explicit `--account EMAIL` can also recover an existing per-email keyring login. Missing credentials produce a login hint; credential/network failures are reported rather than silently opening consent.
 
 ```sh
 Colab auth login --account first@gmail.com
 Colab auth login --account second@gmail.com
-Colab auth list
-Colab session list                        # every saved account
+Colab auth list                              # * marks the default
+Colab auth default second@gmail.com          # auth use EMAIL is an alias
+Colab session shell                         # uses the default account
+Colab exec nvidia-smi                        # uses the default account
+Colab exec --account first@gmail.com nvidia-smi
+Colab session list                          # every saved account, in one table
 Colab session list --account first@gmail.com
-Colab session status                      # all known sessions across accounts
-Colab files targets                       # all accounts and sessions, offline
-Colab files targets --account second@gmail.com --json
-Colab --account first@gmail.com session create trainer --runtime t4
-Colab --account second@gmail.com session create trainer --runtime cpu
-Colab --account first@gmail.com session shell -s trainer
-Colab --account second@gmail.com exec -s trainer nvidia-smi
+Colab session list --json                    # exact unwrapped paths and metadata
+Colab session status                        # all accounts, optional -s NAME filter
+Colab files targets                         # all accounts and sessions, offline
 ```
 
-Listings span all saved accounts unless `--account EMAIL` (`-a EMAIL`) filters them. Session, status, and sync-target listings also accept `-s NAME` to filter matching names across accounts. Commands that change or use a single runtime require `--account EMAIL`: create/start/attach, shell, exec/run, copy/sync, Drive mount, URL, disconnect, and delete. There is no implicit default account for these operations. Within the chosen account, omit `-s` to select its first active session.
+Gmail account arguments accept the username alone: `-a nascarsayan2` means `-a nascarsayan2@gmail.com`. This works for login, listings, runtime commands, transfers, defaults, and logout. Human-readable account labels also omit `@gmail.com`; JSON and credential storage retain full emails. Full emails remain supported; use the full address for other domains. For example:
 
-Accounts remain signed in concurrently. Sessions, SSH keys and sockets, Drive preferences, workspaces, and sync baselines are isolated by account, so identical session names in different accounts do not collide. Separate terminals and parallel commands can use the same or different accounts simultaneously. Changing which account a command selects never retargets an existing shell or SSH master. Listing failures for one account are reported while the others are still queried; the command exits unsuccessfully if results are incomplete.
+```sh
+Colab auth login -a nascarsayan2
+Colab auth default nascarsayan2
+Colab session list -a nascarsayan2
+Colab exec -a nascarsayan2 nvidia-smi
+Colab auth logout -a nascarsayan2
+```
 
-Google's verified email is the account identifier and appears in listings and shell prompts. Credentials live in separate OS-keyring entries (`google-colab-cli` service, `Colab:EMAIL` entry). Only non-secret account metadata is saved in `~/.config/Colab/accounts.json`; session tokens and per-account files live under private `~/.config/Colab/accounts/PROFILE_ID/` directories. Do not share those directories. `auth login` without an email offers Google's account chooser when accounts already exist; on an existing single-account installation, its first successful login discovers the email and copies existing session/workspace/sync settings to that account. Ordinary commands never launch consent or consume program stdin.
+The first email signed in becomes the default. Adding another account preserves the current default. `--account EMAIL` (`-a EMAIL`) overrides it for operations on one account: create/start/attach, shell, exec/run, transfers, Drive mount, URL, and disconnect. Within that account, omit `-s` to select its first active session. Listings span all accounts unless filtered; setting a default does not restrict listings.
+
+`session delete NAME` (or `session delete -s NAME`) finds the account owning that locally known session when `--account` is omitted. A name recorded in multiple accounts is ambiguous and requires an explicit email; deletion does not guess. Without a name or account, deletion selects the first active session in the default account. A literal session named `all` can still be selected with `-s all`.
+
+```sh
+Colab session delete ToastyRaven
+Colab session delete all                     # release every runtime across all signed-in accounts
+Colab session delete all -a first@gmail.com  # only that account, including notebook runtimes
+Colab auth logout                           # local sign-out of default; next account becomes default
+Colab auth logout -a first@gmail.com
+Colab auth logout all
+```
+
+Bulk deletion snapshots active endpoints before submitting deletions. It closes their local SSH connections, releases the runtimes, and removes their local session records; it preserves Google Drive files. Failures are reported while other accounts/endpoints continue, and an incomplete operation exits unsuccessfully. No runtime is created or mounted for deletion.
+
+Logout closes that account's known local SSH connections, deletes its local OAuth credential and runtime proxy tokens, and removes it from the signed-in account list. It does **not** delete running runtimes, revoke browser/other-machine logins, or remove Drive files. Workspace/sync preferences and SSH identity are retained for a future login. Signed-out accounts are not silently restored from legacy credentials. If the default is logged out, the next remaining account becomes default; logging out all accounts clears the default.
+
+Accounts remain signed in concurrently. Sessions, SSH sockets, Drive preferences, workspaces, and sync baselines are isolated by email, so the same name may exist in different accounts. Separate terminals can use different accounts simultaneously; changing the default never retargets an existing shell or SSH master.
+
+The default session table shows one row per runtime: account, session, runtime type, status, and workspace. Human-readable Gmail account labels omit `@gmail.com`, and the default workspace is `/content/Code`. A sync column appears only when a session has configured syncs. Empty sync columns, endpoints, shape, and mount diagnostics are omitted from the default view.
+
+The table detects terminal width automatically (`COLUMNS` overrides it; redirected output defaults to 120 columns). As space decreases it hides sync, workspace, account, and runtime columns in that order, then shortens long values with an ellipsis. Very narrow output shows just the session name. If hiding the account column would make session names ambiguous, the names include `account/session`. Unicode folder names use their terminal display widths. `Colab session list --details` shows complete per-session metadata and sync paths; `--json` preserves exact values for scripts, regardless of width.
+
+Drive is shared read/write storage rather than a scheduled copy. Listing never opens SSH or triggers consent; mount state is explicitly unverified in detailed output. Sync metadata describes configuration and the last successful sync, not a guarantee that files are currently identical. A `?` name is a notebook runtime that has not yet been adopted locally.
+
+Google's verified email is the internal account identifier. Human-readable Gmail labels use the username alone; full emails are retained in JSON and storage. OAuth credentials live in separate OS-keyring entries (`google-colab-cli` service, `Colab:EMAIL` entry). Non-secret account/default metadata is saved in `~/.config/Colab/accounts.json`; private session tokens and per-account files live under `~/.config/Colab/accounts/PROFILE_ID/`. Do not share those directories. Initial legacy discovery copies existing sessions/workspaces/sync settings to the verified account. Ordinary operations never open the Google login flow or consume stdin intended for a program; Drive may require its own consent as described below.
+
+### Why Drive consent can be separate
+
+Google's Colab Drive mount requests runtime-specific `dfs_ephemeral` credential propagation for the allocated endpoint. It cannot reliably be authorized through the CLI's initial OAuth login before that runtime exists; requesting extra Drive API scopes does not replace this mount authorization. The CLI explains this during login and reuses an existing mount whenever possible. Google may still show a Drive consent screen on first use or after runtime replacement. See [Google's Drive mount implementation](https://github.com/googlecolab/colabtools/blob/main/google/colab/drive.py) and [Colab's Drive FAQ](https://research.google.com/colaboratory/faq.html).
 
 ## Quickstart
 
 ```sh
-Colab --account you@gmail.com session start                  # reuse the existing T4 or provision one
-Colab --account you@gmail.com exec nvidia-smi
-Colab --account you@gmail.com exec 'pwd && nvcc --version'
-Colab --account you@gmail.com run ./kernel.cu -- arg1 arg2
-Colab --account you@gmail.com session shell                  # interactive remote Bash; exit to return
+Colab session start                  # reuse the existing T4 or provision one
+Colab exec nvidia-smi
+Colab exec 'pwd && nvcc --version'
+Colab run ./kernel.cu -- arg1 arg2
+Colab session shell                  # interactive remote Bash; exit to return
 Colab session status
 Colab --account you@gmail.com session delete                   # releases the runtime
 ```
 
-`session create [NAME]` allocates an independent runtime. If NAME is omitted, it generates an unused adjective/adverb + noun name such as `BreezyMarble` or `MistyWillow`; names are preserved during recovery. `start` reuses the first active runtime when no `-s` is supplied, or generates a name and creates a runtime when none is open. Normal operations (`exec`, `shell`, `run`, copy/sync) select the first active session in the explicitly selected account in the same order as `Colab session list --account EMAIL`; use `--session NAME` / `-s NAME` to choose another. With no active sessions, operations report an actionable error instead of allocating unexpectedly. An explicitly named expired session can still be recovered with `-s`.
+`session create [NAME]` allocates an independent runtime. If NAME is omitted, it generates an unused adjective/adverb + noun name such as `BreezyMarble` or `MistyWillow`; names are preserved during recovery. `start` reuses the first active runtime when no `-s` is supplied, or generates a name and creates a runtime when none is open. Normal operations (`exec`, `shell`, `run`, copy/sync) select the first active session in the selected account (the default unless overridden) in the same order as `Colab session list --account EMAIL`; use `--session NAME` / `-s NAME` to choose another. With no active sessions, operations report an actionable error instead of allocating unexpectedly. An explicitly named expired session can still be recovered with `-s`.
 
-Every created/used session mounts Drive, creates its working folder (default `~/Code` within **Google Drive**, meaning `/content/drive/MyDrive/Code`), and enters that folder for commands and shells. If a PC folder was configured, it is pushed to that working folder before each data operation. Runtime quota and Google consent requirements still apply.
+Every created/used session mounts Drive, creates its working folder (default Google Drive `~/Code`, exposed directly at `/content/Code`), and enters that folder for commands and shells. If a PC folder was configured, it is pushed to that working folder before each data operation. Runtime quota and Google consent requirements still apply.
 
 ```sh
 Colab session list               # discover runtimes, including notebook runtimes
@@ -228,10 +265,10 @@ Open as many local terminals as you need. A shared OpenSSH master keeps one WebS
 Colab --account you@gmail.com session shell
 
 # Terminal 2, while the shell remains open
-Colab --account you@gmail.com exec nvidia-smi
+Colab exec nvidia-smi
 
 # Terminal 3
-Colab --account you@gmail.com run ./kernel.cu
+Colab run ./kernel.cu
 ```
 
 The connection starts automatically on the first command. A file lock prevents duplicate master connections when commands start simultaneously. Sockets live in `~/.config/Colab/mux/`, in a directory accessible only to your account, and are keyed by account email and runtime endpoint so session aliases share one connection. A dead master or stale socket is replaced on the next command. Before opening a new transport, the CLI checks Google for an active assignment and refreshes runtime credentials. Connection-setup failures include the backend diagnostics; only HTTP 429 is described as a competing SSH connection. Commands already submitted are never retried automatically.
@@ -255,15 +292,21 @@ Regression checks: `python3 -m unittest discover -s tests -v` and `cargo clippy 
 ## Google Drive storage
 
 ```sh
-Colab --account you@gmail.com drive mount
-Colab --account you@gmail.com exec 'ls /content/drive/MyDrive'
+Colab drive mount
+Colab exec pwd                        # /content/Code
+Colab session shell                  # starts in /content/Code
+Colab session create trainer --drive-path '~/Projects/Test'
+# Drive Projects/Test is exposed directly as /content/Test.
+Colab session create work --drive-path '~/Projects/Test' --mount-path /content/Work
 ```
 
-`mount-drive` recovers the runtime if needed, then uses Colab's official `drive.mount` flow at `/content/drive`. An existing mount is reused rather than forcibly remounted. The CLI verifies that the mount and My Drive root are accessible before returning success. Your personal **My Drive** storage root is `/content/drive/MyDrive`; the enclosing mount can also expose Shared drives when available.
+Only the selected folder is exposed as the working directory directly under `/content`. The default is the Drive folder `Code` at `/content/Code`. `--drive-path` selects the source folder in Drive; `--mount-path` optionally overrides its runtime name. The destination must be a single non-reserved folder directly under `/content`; nested paths such as `/content/projects/Code` are rejected before allocating a runtime. Missing Drive source folders are created. Existing saved sessions derive the new destination from their Drive folder's final name on their next operation.
 
-Google may request browser consent before the mount can complete. The standard Drive filesystem integration requests broad account permissions, including permission to modify and delete Drive files; it is not a read-only mount. The CLI does not create or delete Drive files as part of mounting.
+Colab's native DriveFS API mounts a whole Drive filesystem and has no source-folder argument. The CLI therefore keeps that native mount internally at `/root/.Colab/drive` and bind-mounts the selected subfolder at `/content/Code` (or your chosen path). An existing legacy mount is moved internally without copying data or restarting DriveFS. The original empty `/content/drive` directory is removed when possible; files uncovered underneath an old mount are preserved. This is a convenient folder view, **not folder-scoped Google authorization or a filesystem sandbox**: code running as root can still access the internal full-Drive mount. See [Google's Drive mount API](https://github.com/googlecolab/colabtools/blob/main/google/colab/drive.py).
 
-Drive files persist when a Colab runtime is replaced, but the mount does not. Every create/start, shell, execution, and transfer operation checks/restores the mount and the configured Drive workspace before running. Separate mounting is no longer an optional setup requirement. Google may require renewed browser consent on a replacement runtime; if so, the operation stops until consent is completed. Preferences are stored in `~/.config/Colab/accounts/PROFILE_ID/drive/`.
+Every create/start, shell, execution, and transfer operation restores and verifies the Drive connection and selected folder before proceeding. The CLI refuses to mount over a nonempty folder, file, symlink, or unrelated mount. Managed stale bindings are recovered when safe; a busy binding causes an actionable error. Copy/sync checks the backing filesystem as well, so a missing mount never silently becomes temporary runtime storage.
+
+Google may request separate browser consent to mount Drive. The standard integration has broad read/write access, including deletion; selecting a subfolder does not narrow that grant. Drive files persist after a runtime is replaced, while mounts are recreated as needed. Settings are stored per account/session under `~/.config/Colab/accounts/PROFILE_ID/`.
 
 ## Recursive copy and sync
 
@@ -273,23 +316,23 @@ Prefix the remote endpoint with `colab:` and use an absolute runtime path. An un
 
 ```sh
 # Recursive upload and download; no -r flag needed.
-Colab --account you@gmail.com files copy ./data colab:/content/drive/MyDrive/data
-Colab --account you@gmail.com files copy colab:/content/drive/MyDrive/results ./results
+Colab --account you@gmail.com files copy ./data colab:/content/Code/data
+Colab --account you@gmail.com files copy colab:/content/Code/results ./results
 
 # Preview without modifying either data tree.
-Colab --account you@gmail.com files copy ./data colab:/content/drive/MyDrive/data --dry-run
+Colab --account you@gmail.com files copy ./data colab:/content/Code/data --dry-run
 
 # Sync local → remote.
-Colab --account you@gmail.com files sync ./data '>' colab:/content/drive/MyDrive/data
+Colab --account you@gmail.com files sync ./data '>' colab:/content/Code/data
 
 # Sync remote → local (the right endpoint is the source).
-Colab --account you@gmail.com files sync ./data '<' colab:/content/drive/MyDrive/data
+Colab --account you@gmail.com files sync ./data '<' colab:/content/Code/data
 
 # Sync both directions.
-Colab --account you@gmail.com files sync ./data '<>' colab:/content/drive/MyDrive/data
+Colab --account you@gmail.com files sync ./data '<>' colab:/content/Code/data
 
 # Preview the bidirectional plan.
-Colab --account you@gmail.com files sync ./data '<>' colab:/content/drive/MyDrive/data --dry-run
+Colab --account you@gmail.com files sync ./data '<>' colab:/content/Code/data --dry-run
 ```
 
 **Quote the direction symbols.** Without quotes, your shell treats `>`, `<`, and `<>` as redirection operators instead of passing them to the CLI. Keep normal filesystem paths after the `colab:` prefix; `~` expansion is only supported for local paths. A session can be selected with `--session NAME`.
@@ -302,7 +345,7 @@ Colab --account you@gmail.com files sync ./data '<>' colab:/content/drive/MyDriv
 
 ### Transfer recovery and limitations
 
-The CLI checks the Drive mount before transferring to or from `/content/drive`. If Drive is not authorized or cannot be mounted, the operation stops before transfer rather than creating files in the runtime's temporary mount directory.
+The CLI checks managed folder bindings and the underlying Drive mount before transfers. If Drive is not authorized or cannot be mounted, the operation stops before transfer rather than creating files in the runtime's temporary mount directory.
 
 Each file is checksummed and written to a temporary file alongside its destination, then installed with an atomic rename. An interrupted or corrupt file never replaces an existing destination file. Optimistic checks also reject destination edits detected between planning and installation. A copy is atomic per file, not across an entire directory tree. Names beginning with `.Colab-` are reserved for staging and excluded from recursive inventories, so a partial staging file left by a forcibly killed process is never synced as user data. Simultaneous external edits can still require reconciliation; stop writers for a stable dataset snapshot.
 
@@ -357,11 +400,12 @@ The repository directory, Cargo package, and executable are named `Colab`. App-o
 ## Drive workspaces and automatic PC-to-Colab sync
 
 ```sh
-# Generated session name, Drive ~/Code workspace, T4 by default.
+# Generated session name, Drive ~/Code at /content/Code, T4 by default.
 Colab --account you@gmail.com session create
 
 # Explicit name and another folder within My Drive.
 Colab --account you@gmail.com session create trainer --runtime t4 --drive-path '~/Code/Trainer'
+# Commands and shells enter /content/Trainer. Add --mount-path /content/Work to rename the mount.
 
 # Push this PC directory into the Drive workspace before operations.
 Colab --account you@gmail.com session create trainer --runtime t4 --drive-path '~/Code/Trainer' --local-dir ~/Code/my-project
@@ -372,10 +416,10 @@ Colab --account you@gmail.com exec -s trainer 'ls'   # sync PC folder again befo
 
 # Deliberately skip the automatic PC push for one operation (still mount Drive).
 Colab --no-auto-sync exec -s trainer 'ls'
-Colab --no-auto-sync files copy -s trainer colab:/content/drive/MyDrive/Code/Trainer/results ./results
+Colab --no-auto-sync files copy -s trainer colab:/content/Trainer/results ./results
 ```
 
-`--drive-path` is interpreted in Google Drive, not the PC filesystem: `~/Code`, `Code`, `MyDrive/Code`, and `/content/drive/MyDrive/Code` refer to the same place. Missing folders are created. Absolute paths must be under `/content/drive`; parent traversal (`..`) is rejected. Configuration is per named session in `~/.config/Colab/workspaces/`. Existing sessions without saved workspace settings default to Google Drive `~/Code`.
+`--drive-path` names a Google Drive source folder, not a PC path or the visible runtime mount. `~/Code`, `Code`, `MyDrive/Code`, and the legacy source spelling `/content/drive/MyDrive/Code` select the same Drive folder; commands use `/content/Code`. `~/Code/Trainer` uses `/content/Trainer` by default. `--mount-path /content/Work` overrides only the visible name. Existing configurations migrate automatically, and explicit old copy/sync paths within the session's selected source folder are translated to its visible mount. Settings are per named session in `~/.config/Colab/accounts/PROFILE_ID/workspaces/`.
 
 `--local-dir` enables a one-way **PC → Colab** sync into that workspace. It runs before create completes, before `exec`/`run`, before opening a shell, and before explicit copy/sync operations. It is an operation-boundary sync, not a continuous filesystem mount or watcher. Matching remote files are replaced by PC changes; extra remote files are preserved. If local files disappear or a transfer fails, the remote command/shell does not start. Use `--no-auto-sync` when retrieving remote edits that should not first be overwritten by the PC version. To keep independent projects apart, give their sessions different Drive working folders.
 
@@ -407,15 +451,15 @@ The previous flat spellings remain accepted as hidden compatibility aliases, but
 
 ## Interactive shell prompt
 
-`Colab --account you@gmail.com session shell` shows the account email, selected session name, and the last two folders of the current path:
+`Colab --account you@gmail.com session shell` shows `username@session`, and the last two folders of the current path:
 
 ```text
-(you@gmail.com / SandyFinch) MyDrive/Code $
+you@SandyFinch content/Code $
 ```
 
-For example, `/content/drive/MyDrive/Code` becomes `MyDrive/Code`; after entering `/content/drive/MyDrive/Code/src`, the prompt becomes `(you@gmail.com / SandyFinch) Code/src $`. It updates as you change directories and always uses a literal `$`, even though the runtime account is root. The shell-specific prompt does not modify the runtime's global Bash configuration or affect `Colab --account you@gmail.com exec` output.
+For example, `/content/Code` becomes `content/Code`; after entering `/content/Code/src`, the prompt becomes `you@SandyFinch Code/src $`. It updates as you change directories and always uses a literal `$`, even though the runtime account is root. The shell-specific prompt does not modify the runtime's global Bash configuration or affect `Colab --account you@gmail.com exec` output.
 
-The interactive prompt colors the session name **cyan**, the last two path components **blue**, and `$` **green**. After a failed command, `$` turns **red**. `NO_COLOR=1` or `TERM=dumb` selects a plain prompt. Color sequences are marked as nonprinting so long command lines wrap correctly; the colors apply only to the interactive shell.
+The interactive prompt colors `username@session` **cyan**, the last two path components **blue**, and `$` **green**. After a failed command, `$` turns **red**. `NO_COLOR=1` or `TERM=dumb` selects a plain prompt. Color sequences are marked as nonprinting so long command lines wrap correctly; the colors apply only to the interactive shell.
 
 ## List runtime types
 

@@ -34,6 +34,46 @@ if 'Named, isolated Colab runtime' in source:
  p=profile/'sessions.json';p.parent.mkdir(parents=True,exist_ok=True)
  state=json.loads(p.read_text()) if p.exists() else {}
  state[name]={'name':name,'endpoint':'endpoint-'+name};p.write_text(json.dumps(state))
+elif "Use Google's OAuth flow" in source:
+ if '--cached' in args:
+  email=os.environ.get('MOCK_CACHED_EMAIL')
+  requested=os.environ.get('COLAB_LOGIN_EMAIL')
+  if not email or requested and requested!=email:sys.exit(3)
+  ident='11111111-1111-4111-8111-111111111111'
+  p=home/'.config/Colab/accounts.json';p.write_text(json.dumps({'accounts':{email:{'id':ident}},'default':email}))
+  profile=home/'.config/Colab/accounts'/ident;profile.mkdir(parents=True,exist_ok=True)
+  legacy=home/'.config/colab-cli/sessions.json'
+  if legacy.exists():(profile/'sessions.json').write_text(legacy.read_text())
+  (home/'cached-discovery.json').write_text(json.dumps(args))
+elif 'Return session inventory as JSON' in source:
+ if os.environ.get('MOCK_FAIL_ACCOUNT')==os.environ.get('COLAB_ACCOUNT'):print('Error: expired login',file=sys.stderr);sys.exit(1)
+ with (home/'inventory-calls.jsonl').open('a') as f:f.write(json.dumps([os.environ.get('COLAB_ACCOUNT'),str(profile),args[0]])+'\\n')
+ p=profile/'sessions.json';state=json.loads(p.read_text()) if p.exists() else {}
+ rows=[]
+ for name,item in state.items():
+  if args[0] and name!=args[0]:continue
+  import uuid
+  wf=profile/'workspaces'/(uuid.uuid5(uuid.NAMESPACE_URL,name).hex+'.json')
+  workspace=json.loads(wf.read_text()) if wf.exists() else {}
+  rows.append(dict(session=name,names=[name],endpoint=item['endpoint'],runtime='T4',shape='Standard',status='IDLE',workspace=workspace.get('mount_path','/content/'+workspace.get('drive_path','/Code').rstrip('/').split('/')[-1]),drive_folder=workspace.get('drive_path','~/Code').replace('/content/drive/MyDrive/','~/'),local_folder=workspace.get('local_dir'),sync_pairs=[]))
+ print(json.dumps(rows))
+elif 'Release exactly the snapshotted runtime endpoints' in source:
+ endpoints=json.loads(args[0]);p=profile/'sessions.json';state=json.loads(p.read_text()) if p.exists() else {}
+ with (home/'deleted.jsonl').open('a') as f:f.write(json.dumps([os.environ['COLAB_ACCOUNT'],endpoints])+'\\n')
+ results=[]
+ for endpoint in endpoints:
+  deleted=not os.environ.get('MOCK_DELETE_FAIL')==os.environ['COLAB_ACCOUNT']
+  if deleted:state={n:v for n,v in state.items() if v['endpoint']!=endpoint}
+  results.append(dict(endpoint=endpoint,deleted=deleted))
+ p.write_text(json.dumps(state));print(json.dumps(results));sys.exit(0 if all(r['deleted'] for r in results) else 1)
+elif 'Update account defaults or remove local credentials' in source:
+ p=home/'.config/Colab/accounts.json';data=json.loads(p.read_text());action,email=args[:2]
+ if action=='default':data['default']=email
+ else:
+  item=data['accounts'].pop(email);data.setdefault('signed_out',{})[email]=item;data['legacy_signed_out']=True
+  (home/'.config/Colab/accounts'/item['id']/'sessions.json').unlink(missing_ok=True)
+  if data.get('default') not in data['accounts']:data['default']=next(iter(data['accounts']),None)
+ p.write_text(json.dumps(data));print(action+': '+email.removesuffix('@gmail.com'))
 elif 'Return the first active runtime' in source:
  p=profile/'sessions.json';state=json.loads(p.read_text()) if p.exists() else {}
  if state: print(next(iter(state)))
@@ -56,7 +96,7 @@ if '-O' in args:
 elif '-M' in args:sock.touch()
 else:
  with (home/'ssh-calls.jsonl').open('a') as f:f.write(json.dumps(args[-1])+'\\n')
- if args[-1].startswith('cd '):print('remote-ok')
+ if ' && cd ' in args[-1] or args[-1].startswith('cd '):print('remote-ok')
 ''')
 
     def script(self,name,code):
@@ -100,7 +140,7 @@ else:
         self.assertNotIn('gpu-proxy',p.stdout)
         p=self.call('shell');self.assertEqual(p.returncode,0,p.stderr)
         commands=(self.home/'ssh-calls.jsonl').read_text()
-        self.assertIn('cd \'/content/drive/MyDrive/Code\'',commands)
+        self.assertIn('cd \'/content/Code\'',commands)
 
     def test_first_open_session_is_default_and_explicit_name_overrides(self):
         self.assertEqual(self.call('create','ZestyFirst').returncode,0)
@@ -117,7 +157,7 @@ else:
         p=self.call('exec','-s','trainer','pwd');self.assertEqual(p.returncode,0,p.stderr)
         calls=[json.loads(x) for x in (self.home/'sync-calls.jsonl').read_text().splitlines()]
         self.assertEqual(len(calls),2)
-        self.assertIn(str(local),calls[-1]);self.assertIn('>',calls[-1]);self.assertIn('colab:/content/drive/MyDrive/Projects/Test',calls[-1])
+        self.assertIn(str(local),calls[-1]);self.assertIn('>',calls[-1]);self.assertIn('colab:/content/Test',calls[-1])
         p=self.call('--no-auto-sync','exec','-s','trainer','pwd');self.assertEqual(p.returncode,0,p.stderr)
         self.assertEqual(len((self.home/'sync-calls.jsonl').read_text().splitlines()),2)
 
@@ -160,3 +200,37 @@ else:
         self.assertNotEqual(p.returncode,0)
         self.assertIn('interrupted transfer',p.stderr)
         self.assertNotIn('dangerous-task',(self.home/'ssh-calls.jsonl').read_text())
+
+    def test_drive_folder_has_direct_mount_and_optional_override(self):
+        for source,mount in [('~/Code','/content/Code'),('~/Projects/Test','/content/Test')]:
+            p=self.call('session','create','trainer-'+mount.split('/')[-1],'--drive-path',source)
+            self.assertEqual(p.returncode,0,p.stderr)
+            self.assertIn('ready in '+mount,p.stdout)
+        p=self.call('session','create','work','--drive-path','~/Projects/Test','--mount-path','/content/Work')
+        self.assertEqual(p.returncode,0,p.stderr)
+        self.assertIn('/content/Work',p.stdout)
+        p=self.call('session','shell','-s','work')
+        self.assertEqual(p.returncode,0,p.stderr)
+        self.assertIn("cd '/content/Work'",json.loads((self.home/'ssh-calls.jsonl').read_text().splitlines()[-1]))
+
+    def test_invalid_mount_path_is_rejected_before_allocation(self):
+        for mount in ['/tmp/Code','/content/nested/Code','/content/drive','../Code']:
+            p=self.call('session','create','trainer','--mount-path',mount)
+            self.assertNotEqual(p.returncode,0)
+            self.assertIn('directly under /content',p.stderr)
+        self.assertEqual(self.calls(),[])
+
+    def test_legacy_workspace_settings_migrate_and_copy_paths_translate(self):
+        import uuid
+        p=self.call('session','create','trainer')
+        self.assertEqual(p.returncode,0,p.stderr)
+        file=self.profile/'workspaces'/(uuid.uuid5(uuid.NAMESPACE_URL,'trainer').hex+'.json')
+        file.write_text(json.dumps({'drive_path':'/content/drive/MyDrive/Projects/Test','local_dir':None}))
+        p=self.call('exec','-s','trainer','pwd')
+        self.assertEqual(p.returncode,0,p.stderr)
+        self.assertEqual(json.loads(file.read_text())['mount_path'],'/content/Test')
+        source=self.home/'source';source.mkdir()
+        p=self.call('files','copy','-s','trainer',str(source),'colab:/content/drive/MyDrive/Projects/Test/data')
+        self.assertEqual(p.returncode,0,p.stderr)
+        calls=[json.loads(line) for line in (self.home/'sync-calls.jsonl').read_text().splitlines()]
+        self.assertIn('colab:/content/Test/data',calls[-1])

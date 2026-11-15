@@ -31,10 +31,10 @@ class Hierarchy(unittest.TestCase):
         self.assertIn(['--auth','oauth2','--config',str(self.profile/'sessions.json'),'stop','-s','trainer'],records)
 
     def test_global_session_flag_works_at_each_level(self):
-        for args in [('-s','trainer','session','status'),('session','-s','trainer','status'),('session','status','-s','trainer')]:
+        for args in [('-s','trainer','session','url'),('session','-s','trainer','url'),('session','url','-s','trainer')]:
             p=self.call(*args);self.assertEqual(p.returncode,0,p.stderr)
         records=[json.loads(x) for x in (self.home/'cli-calls.jsonl').read_text().splitlines()]
-        self.assertEqual(records,[['--auth','oauth2','--config',str(self.profile/'sessions.json'),'status','-s','trainer']]*3)
+        self.assertEqual(records,[['--auth','oauth2','--config',str(self.profile/'sessions.json'),'url','-s','trainer']]*3)
 
     def test_file_group_routes_copy_sync_and_offline_targets(self):
         p=self.call('session','create','trainer');self.assertEqual(p.returncode,0,p.stderr)
@@ -53,7 +53,7 @@ class Hierarchy(unittest.TestCase):
         self.assertEqual(self.calls(),[])
         p=self.call('session','create','trainer');self.assertEqual(p.returncode,0,p.stderr)
         p=self.call('drive','mount','-s','trainer');self.assertEqual(p.returncode,0,p.stderr)
-        self.assertIn('/content/drive/MyDrive/Code',p.stdout)
+        self.assertIn('/content/Code',p.stdout)
 
     def test_empty_groups_show_help_without_touching_google(self):
         for group in ['auth','session','runtime','files','drive']:

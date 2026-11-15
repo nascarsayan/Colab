@@ -8,6 +8,8 @@ import sys
 import tempfile
 
 
+WORKSPACE_REGISTRY = Path('/root/.Colab/workspaces.json')
+
 def safe_path(root, relative=''):
     root = Path(os.path.abspath(os.path.expanduser(root)))
     if root.is_symlink():
@@ -15,10 +17,21 @@ def safe_path(root, relative=''):
     # Canonicalize the selected root's parent (macOS /tmp and /var are aliases).
     # Links in the selected tree itself are still rejected below.
     root = root.parent.resolve() / root.name
-    drive = Path('/content/drive')
-    if root == drive or drive in root.parents:
-        if not os.path.ismount(drive) or not (drive / 'MyDrive').is_dir():
-            raise RuntimeError('Google Drive is not mounted; no files were written. Run Colab drive mount --account EMAIL.')
+    for drive in (Path('/content/drive'), Path('/root/.Colab/drive')):
+        if root == drive or drive in root.parents:
+            if not os.path.ismount(drive) or not (drive / 'MyDrive').is_dir():
+                raise RuntimeError('Google Drive is not mounted; no files were written. Run Colab drive mount.')
+    registry = WORKSPACE_REGISTRY
+    if (root == Path('/content') or Path('/content') in root.parents) and registry.is_file():
+        for name, item in json.loads(registry.read_text()).items():
+            target = Path(name)
+            if root == target or target in root.parents:
+                try:
+                    ready = os.path.ismount(target) and os.path.ismount(item['backing']) and os.path.samefile(target, item['source'])
+                except OSError:
+                    ready = False
+                if not ready:
+                    raise RuntimeError('Drive workspace is not mounted; no files were written. Run Colab drive mount.')
     relative = Path(relative)
     if relative.is_absolute() or '..' in relative.parts:
         raise ValueError('Invalid relative path')

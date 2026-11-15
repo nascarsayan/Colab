@@ -30,9 +30,9 @@ __colab_prompt() {
         local dollar='\[\e[1;32m\]'
         if (( status != 0 )); then dollar='\[\e[1;31m\]'; fi
         # Readline must ignore escape-sequence widths when editing/wrapping lines.
-        printf -v PS1 '%s(%s)%s %s%s%s %s$%s ' "$cyan" "$__colab_session" "$reset" "$blue" "$display" "$reset" "$dollar" "$reset"
+        printf -v PS1 '%s%s%s %s%s%s %s$%s ' "$cyan" "$__colab_session" "$reset" "$blue" "$display" "$reset" "$dollar" "$reset"
     else
-        printf -v PS1 '(%s) %s $ ' "$__colab_session" "$display"
+        printf -v PS1 '%s %s $ ' "$__colab_session" "$display"
     fi
 }
 shopt -u promptvars

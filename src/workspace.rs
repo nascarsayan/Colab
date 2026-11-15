@@ -7,6 +7,7 @@ use std::{
 #[derive(Clone)]
 pub struct Config {
     pub remote: String,
+    pub drive: String,
     pub local: Option<String>,
 }
 fn path(session: &str) -> Result<PathBuf> {
@@ -42,8 +43,36 @@ pub fn remote_path(input: &str) -> Result<String> {
     }
     Ok(out.trim_end_matches('/').to_owned())
 }
-pub fn options(drive: Option<&str>, local: Option<&Path>) -> Result<Config> {
-    let remote = remote_path(drive.unwrap_or("~/Code"))?;
+pub fn mount_path(input: Option<&str>, drive: &str) -> Result<String> {
+    let leaf = Path::new(drive)
+        .file_name()
+        .and_then(|p| p.to_str())
+        .context("Drive folder has no name")?;
+    let input = input.unwrap_or(leaf);
+    let path = if input.starts_with('/') {
+        PathBuf::from(input)
+    } else {
+        PathBuf::from("/content").join(input)
+    };
+    let name = path
+        .file_name()
+        .and_then(|p| p.to_str())
+        .context("Mount path must name a folder directly under /content")?;
+    if path.parent() != Some(Path::new("/content"))
+        || name.starts_with('.')
+        || ["drive", "sample_data"].contains(&name)
+        || input.contains('\0')
+        || input.split('/').any(|s| [".", ".."].contains(&s))
+    {
+        bail!(
+            "Mount path must be a non-reserved folder directly under /content, e.g. /content/Code"
+        );
+    }
+    Ok(path.to_str().context("Mount path is not UTF-8")?.to_owned())
+}
+pub fn options(drive: Option<&str>, mount: Option<&str>, local: Option<&Path>) -> Result<Config> {
+    let drive = remote_path(drive.unwrap_or("~/Code"))?;
+    let remote = mount_path(mount, &drive)?;
     let local = if let Some(p) = local {
         let text = p.to_string_lossy();
         let expanded = if let Some(tail) = text.strip_prefix("~/") {
@@ -67,7 +96,11 @@ pub fn options(drive: Option<&str>, local: Option<&Path>) -> Result<Config> {
     } else {
         None
     };
-    Ok(Config { remote, local })
+    Ok(Config {
+        remote,
+        drive,
+        local,
+    })
 }
 pub fn save(session: &str, cfg: &Config) -> Result<()> {
     let file = path(session)?;
@@ -76,7 +109,7 @@ pub fn save(session: &str, cfg: &Config) -> Result<()> {
     fs::write(
         &temporary,
         serde_json::to_vec_pretty(
-            &serde_json::json!({"drive_path":cfg.remote,"local_dir":cfg.local}),
+            &serde_json::json!({"drive_path":cfg.drive.strip_prefix("/content/drive/MyDrive/").map(|tail| format!("~/{tail}")).unwrap_or_else(|| cfg.drive.clone()),"mount_path":cfg.remote,"local_dir":cfg.local}),
         )?,
     )?;
     fs::rename(temporary, file)?;
@@ -85,13 +118,19 @@ pub fn save(session: &str, cfg: &Config) -> Result<()> {
 pub fn load(session: &str) -> Result<Config> {
     let file = path(session)?;
     if !file.exists() {
-        return options(None, None);
+        return options(None, None, None);
     }
     let value: serde_json::Value = serde_json::from_slice(&fs::read(file)?)?;
-    Ok(Config {
-        remote: remote_path(value["drive_path"].as_str().unwrap_or("~/Code"))?,
+    let drive = remote_path(value["drive_path"].as_str().unwrap_or("~/Code"))?;
+    let cfg = Config {
+        remote: mount_path(value["mount_path"].as_str(), &drive)?,
+        drive,
         local: value["local_dir"].as_str().map(str::to_owned),
-    })
+    };
+    if !value["mount_path"].is_string() {
+        save(session, &cfg)?;
+    }
+    Ok(cfg)
 }
 pub fn prepare(session: &str, auto_sync: bool) -> Result<(PathBuf, String)> {
     let cfg = load(session)?;
@@ -104,8 +143,9 @@ pub fn prepare(session: &str, auto_sync: bool) -> Result<(PathBuf, String)> {
     }
     let socket = crate::drive::ready(session)?;
     let command = format!(
-        "mountpoint -q /content/drive && mkdir -p -- {} && test -d {}",
-        crate::quote(&cfg.remote),
+        "python3 -c {} {} {}",
+        crate::quote(include_str!("workspace_mount.py")),
+        crate::quote(&cfg.drive),
         crate::quote(&cfg.remote)
     );
     let status = crate::transport::client(&socket)
@@ -149,5 +189,33 @@ mod tests {
         }
         assert!(remote_path("../escape").is_err());
         assert!(remote_path("/tmp/not-drive").is_err());
+    }
+    #[test]
+    fn visible_mount_is_directly_under_content() {
+        assert_eq!(
+            mount_path(None, "/content/drive/MyDrive/Code").unwrap(),
+            "/content/Code"
+        );
+        assert_eq!(
+            mount_path(None, "/content/drive/MyDrive/Projects/Test").unwrap(),
+            "/content/Test"
+        );
+        assert_eq!(
+            mount_path(Some("Work"), "/content/drive/MyDrive/Code").unwrap(),
+            "/content/Work"
+        );
+        for path in [
+            "/tmp/Code",
+            "/content/nested/Code",
+            "../Code",
+            "/content/../Code",
+            "/content/drive",
+            "/content/.hidden",
+        ] {
+            assert!(
+                mount_path(Some(path), "/content/drive/MyDrive/Code").is_err(),
+                "{path}"
+            );
+        }
     }
 }

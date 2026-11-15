@@ -38,6 +38,22 @@ impl Runtime {
         }
     }
 }
+fn parse_account(input: &str) -> Result<String, String> {
+    let input = input.trim().to_lowercase();
+    if input.is_empty() || input.chars().any(char::is_whitespace) {
+        return Err("Use a Gmail username or a full email address".into());
+    }
+    let email = if input.contains('@') {
+        input
+    } else {
+        format!("{input}@gmail.com")
+    };
+    let parts: Vec<_> = email.split('@').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return Err("Use a Gmail username or a full email address".into());
+    }
+    Ok(email)
+}
 fn parse_name(name: &str) -> Result<String, String> {
     if name.is_empty()
         || name.len() > 64
@@ -109,7 +125,8 @@ mod transport;
 mod workspace;
 fn execute_on(socket: &Path, cwd: &str, command: Option<&str>) -> Result<()> {
     let remote = format!(
-        "cd {} && export PATH=/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin:$PATH && {{\n{}\n}}",
+        "mountpoint -q {} && cd {} && export PATH=/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin:$PATH && {{\n{}\n}}",
+        quote(cwd),
         quote(cwd),
         command.unwrap_or("exec bash -i")
     );
@@ -237,7 +254,29 @@ fn transfer(
         bail!("Remote paths must be absolute, for example colab:/content/data")
     }
     let (socket, _) = workspace::prepare(session, auto_sync)?;
-    transfer_on(&socket, session, action, src, direction, dest, dry_run)
+    let cfg = workspace::load(session)?;
+    let translate = |input: &str| {
+        for prefix in ["colab:", "collab:"] {
+            if let Some(path) = input.strip_prefix(prefix) {
+                if path == cfg.drive {
+                    return format!("colab:{}", cfg.remote);
+                }
+                if let Some(tail) = path.strip_prefix(&format!("{}/", cfg.drive)) {
+                    return format!("colab:{}/{tail}", cfg.remote);
+                }
+            }
+        }
+        input.to_owned()
+    };
+    transfer_on(
+        &socket,
+        session,
+        action,
+        &translate(src),
+        direction,
+        &translate(dest),
+        dry_run,
+    )
 }
 fn transfer_on(
     socket: &Path,
@@ -288,37 +327,32 @@ fn run() -> Result<()> {
     if matches!(command, Command::AuthList) {
         return accounts::list(c.account.as_deref());
     }
+    if let Command::AuthDefault { email } = &command {
+        return accounts::set_default(email);
+    }
+    if let Command::Logout { all } = command {
+        setup::ensure()?;
+        return accounts::logout(c.account.as_deref(), all);
+    }
     let offline = matches!(
         command,
         Command::RuntimeList { .. } | Command::SyncTargets { .. }
     );
-    let listing = matches!(
-        command,
-        Command::Sessions
-            | Command::Status
-            | Command::SyncTargets { .. }
-            | Command::RuntimeList { .. }
-    );
-    if !listing && !matches!(command, Command::Login { .. }) && c.account.is_none() {
-        bail!("--account EMAIL is required for this operation. Run Colab auth list to see saved accounts.");
-    }
     if !offline {
         setup::ensure()?;
     }
-    if matches!(command, Command::Login { .. }) {
+    if let Command::Login { no_browser } = command {
+        if c.account.is_some() {
+            accounts::recover(c.account.as_deref())?;
+        }
         accounts::configure_login(c.account.as_deref())?;
-    } else if !listing {
-        accounts::select(
-            c.account
-                .as_deref()
-                .context("--account EMAIL is required")?,
-        )?;
+        return setup::login(no_browser);
     }
-    if matches!(command, Command::Sessions) {
-        return accounts::sessions(c.account.as_deref(), "sessions", c.session.as_deref());
+    if let Command::Sessions { json, details } = command {
+        return accounts::sessions(c.account.as_deref(), c.session.as_deref(), json, details);
     }
     if matches!(command, Command::Status) {
-        return accounts::sessions(c.account.as_deref(), "status", c.session.as_deref());
+        return accounts::sessions(c.account.as_deref(), c.session.as_deref(), false, false);
     }
     if let Command::SyncTargets { all_sessions, json } = command {
         return targets::list_accounts(
@@ -328,13 +362,36 @@ fn run() -> Result<()> {
             json,
         );
     }
-    let explicit = c.session.as_deref();
+    let delete_target = if let Command::Stop { ref target } = command {
+        target.clone()
+    } else {
+        None
+    };
+    if delete_target.is_some() && c.session.is_some() {
+        bail!("Use either a session name after delete or --session, not both.");
+    }
+    if delete_target.as_deref() == Some("all") {
+        return accounts::delete_all(c.account.as_deref());
+    }
+    if !matches!(command, Command::RuntimeList { .. }) {
+        accounts::select(
+            c.account.as_deref(),
+            if matches!(command, Command::Stop { .. }) {
+                delete_target.as_deref().or(c.session.as_deref())
+            } else {
+                None
+            },
+        )?;
+    }
+    let explicit = delete_target.as_deref().or(c.session.as_deref());
     let auto_sync = !c.no_auto_sync;
     // Selection is deliberately skipped for authentication/listing and explicit creation.
     let selected = match &command {
         Command::AuthList
+        | Command::AuthDefault { .. }
+        | Command::Logout { .. }
         | Command::Login { .. }
-        | Command::Sessions
+        | Command::Sessions { .. }
         | Command::RuntimeList { .. }
         | Command::Create { .. }
         | Command::SyncTargets { .. } => String::new(),
@@ -360,7 +417,7 @@ fn run() -> Result<()> {
     };
     let s = selected.as_str();
     match command {
-        Command::AuthList => unreachable!(),
+        Command::AuthList | Command::AuthDefault { .. } | Command::Logout { .. } => unreachable!(),
         Command::Login { no_browser } => setup::login(no_browser),
         Command::RuntimeList { json } => runtimes::list(json),
         Command::Create {
@@ -368,13 +425,18 @@ fn run() -> Result<()> {
             runtime,
             high_mem,
             drive_path,
+            mount_path,
             local_dir,
         } => {
             let name = name
                 .or_else(|| explicit.map(str::to_owned))
                 .map(Ok)
                 .unwrap_or_else(sessions::generated)?;
-            let cfg = workspace::options(Some(&drive_path), local_dir.as_deref())?;
+            let cfg = workspace::options(
+                Some(&drive_path),
+                mount_path.as_deref(),
+                local_dir.as_deref(),
+            )?;
             manage("create", &name, runtime.backend(), None, Some(high_mem))?;
             workspace::save(&name, &cfg)?;
             workspace::prepare(&name, auto_sync).with_context(||format!("Session {name} was created, but its workspace is not ready. Run Colab drive mount --account EMAIL -s {name} to finish setup"))?;
@@ -440,8 +502,8 @@ fn run() -> Result<()> {
             transfer(s, "sync", &src, &direction, &dest, dry_run, auto_sync)
         }
         Command::Status => backend(["status", "-s", s]),
-        Command::Sessions => backend(["sessions"]),
-        Command::Stop => {
+        Command::Sessions { .. } => unreachable!(),
+        Command::Stop { .. } => {
             transport::disconnect(s)?;
             backend(["stop", "-s", s])
         }

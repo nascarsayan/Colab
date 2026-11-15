@@ -1,12 +1,14 @@
 [package]
 name = "Colab"
-version = "0.11.0"
+version = "0.13.1"
 edition = "2021"
 description = "Run CUDA and PTX jobs on a Google Colab GPU runtime from a local CLI"
 license = "MIT"
 
 [dependencies]
 anyhow = "1"
+libc = "0.2"
+unicode-width = "0.2"
 clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "v5"] }
 fs2 = "0.4"

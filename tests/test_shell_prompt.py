@@ -9,7 +9,7 @@ import test_creation_cli as fixtures
 
 RC=Path(__file__).resolve().parents[1]/'src/shellrc.sh'
 
-def script(name='SandyFinch'):
+def script(name='nascarsayan2@SandyFinch'):
     return RC.read_text().replace('__COLAB_SESSION__',shlex.quote(name))
 
 class Prompt(unittest.TestCase):
@@ -19,19 +19,19 @@ class Prompt(unittest.TestCase):
                 source=script()+'\nPWD='+shlex.quote(path)+'\n__colab_prompt\nprintf "%s" "$PS1"\n'
                 p=subprocess.run(['/bin/bash','--noprofile','--norc'],input=source,env=dict(os.environ,NO_COLOR='1'),capture_output=True,text=True)
                 self.assertEqual(p.returncode,0,p.stderr)
-                self.assertEqual(p.stdout,f'(SandyFinch) {expected} $ ')
+                self.assertEqual(p.stdout,f'nascarsayan2@SandyFinch {expected} $ ')
 
     def test_prompt_updates_after_cd(self):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'one/two/three';path.mkdir(parents=True)
-            source=script('MistyWillow')+'\ncd '+shlex.quote(str(path))+'''\n__colab_prompt
+            source=script('nascarsayan2@MistyWillow')+'\ncd '+shlex.quote(str(path))+'''\n__colab_prompt
 printf '%s\\n' "$PS1"
 cd ..
 __colab_prompt
 printf '%s\\n' "$PS1"
 '''
             p=subprocess.run(['/bin/bash','--noprofile','--norc'],input=source,env=dict(os.environ,NO_COLOR='1'),capture_output=True,text=True)
-            self.assertEqual(p.stdout,'(MistyWillow) two/three $ \n(MistyWillow) one/two $ \n')
+            self.assertEqual(p.stdout,'nascarsayan2@MistyWillow two/three $ \nnascarsayan2@MistyWillow one/two $ \n')
 
     def test_directory_text_is_not_executed_when_interactive_prompt_renders(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -52,7 +52,7 @@ printf '%s\\n' "$PS1"
 
     def test_color_segments_and_readline_markers(self):
         value=self.colored_prompt()
-        self.assertIn(r'\[\e[1;36m\](SandyFinch)',value)
+        self.assertIn(r'\[\e[1;36m\]nascarsayan2@SandyFinch',value)
         self.assertIn(r'\[\e[1;34m\]MyDrive/Code',value)
         self.assertIn(r'\[\e[1;32m\]$',value)
         self.assertEqual(value.count(r'\['),value.count(r'\]'))
@@ -62,8 +62,8 @@ printf '%s\\n' "$PS1"
         self.assertIn(r'\[\e[1;31m\]$',self.colored_prompt(failed=True))
 
     def test_plain_fallback_for_no_color_and_dumb_terminal(self):
-        self.assertEqual(self.colored_prompt(NO_COLOR='1'),'(SandyFinch) MyDrive/Code $ ')
-        self.assertEqual(self.colored_prompt(TERM='dumb'),'(SandyFinch) MyDrive/Code $ ')
+        self.assertEqual(self.colored_prompt(NO_COLOR='1'),'nascarsayan2@SandyFinch MyDrive/Code $ ')
+        self.assertEqual(self.colored_prompt(TERM='dumb'),'nascarsayan2@SandyFinch MyDrive/Code $ ')
 
 class PromptWiring(unittest.TestCase):
     setUp=fixtures.CreationCLI.setUp
@@ -76,7 +76,8 @@ class PromptWiring(unittest.TestCase):
         p=self.call('session','shell','-s','SandyFinch');self.assertEqual(p.returncode,0,p.stderr)
         commands=[json.loads(x) for x in (self.home/'ssh-calls.jsonl').read_text().splitlines()]
         self.assertIn('__colab_session=',commands[-1])
-        self.assertIn('SandyFinch',commands[-1])
+        self.assertIn('one@SandyFinch',commands[-1])
+        self.assertNotIn('one@gmail.com',commands[-1])
         self.assertIn('__colab_prompt',commands[-1])
         p=self.call('exec','-s','SandyFinch','echo hello');self.assertEqual(p.returncode,0,p.stderr)
         command=json.loads((self.home/'ssh-calls.jsonl').read_text().splitlines()[-1])

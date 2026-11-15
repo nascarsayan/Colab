@@ -152,6 +152,20 @@ class Files(unittest.TestCase):
         self.sync('>')
         self.assertEqual((self.remote / 'a').read_bytes(), b'copied')
 
+    def test_unmounted_managed_workspace_never_becomes_ephemeral_destination(self):
+        rpc=self.globals['namespace']
+        registry=self.base/'workspaces.json'
+        registry.write_text(json.dumps({'/content/Code':{'backing':'/root/.Colab/drive','source':'/root/.Colab/drive/MyDrive/Code'}}))
+        rpc['WORKSPACE_REGISTRY']=registry
+        with patch('os.path.ismount',return_value=False):
+            with self.assertRaisesRegex(RuntimeError,'workspace is not mounted'):
+                rpc['safe_path']('/content/Code/results')
+        with patch('os.path.ismount',return_value=True),patch('os.path.samefile',return_value=False):
+            with self.assertRaisesRegex(RuntimeError,'workspace is not mounted'):
+                rpc['safe_path']('/content/Code/results')
+        with patch('os.path.ismount',return_value=True),patch('os.path.samefile',return_value=True):
+            self.assertEqual(str(rpc['safe_path']('/content/Code/results')),'/content/Code/results')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -18,7 +18,7 @@ fn mounted(socket: &Path) -> Result<bool> {
         .args([
             "-T",
             "root@colab-runtime",
-            "mountpoint -q /content/drive && test -d /content/drive/MyDrive",
+            "mountpoint -q /root/.Colab/drive && test -d /root/.Colab/drive/MyDrive",
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -29,10 +29,24 @@ fn mount_on(socket: &Path, session: &str) -> Result<()> {
     if mounted(socket)? {
         return Ok(());
     }
-    eprintln!("Restoring Google Drive mount for {session}...");
+    let prepare = format!(
+        "python3 -c {}",
+        crate::quote(include_str!("drive_backend.py"))
+    );
+    let output = crate::transport::client(socket)
+        .args(["-T", "root@colab-runtime", &prepare])
+        .stdin(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+    }
+    if String::from_utf8_lossy(&output.stdout).trim() == "mounted" {
+        return Ok(());
+    }
+    eprintln!("Restoring Google Drive connection for {session}...");
     let stderr = std::io::stderr().as_fd().try_clone_to_owned()?;
     let status = crate::backend_command()?
-        .args(["drivemount", "-s", session])
+        .args(["drivemount", "-s", session, "/root/.Colab/drive"])
         // Consent can use /dev/tty; never consume stdin intended for a program.
         .stdin(Stdio::null())
         .stdout(Stdio::from(stderr))

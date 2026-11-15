@@ -105,6 +105,9 @@ pub fn connect(session: &str) -> Result<PathBuf> {
     let _session_guard = session_lock(session)?;
     if let Ok(socket) = socket_path(session) {
         if alive(&socket) {
+            if let Ok(email) = std::env::var("COLAB_ACCOUNT") {
+                fs::write(socket.with_extension("account"), email)?;
+            }
             crate::drive::restore(&socket, session)?;
             return Ok(socket);
         }
@@ -201,6 +204,9 @@ pub fn connect(session: &str) -> Result<PathBuf> {
     if !alive(&socket) {
         bail!("SSH master did not create a usable control socket")
     }
+    if let Ok(email) = std::env::var("COLAB_ACCOUNT") {
+        fs::write(socket.with_extension("account"), email)?;
+    }
     crate::drive::restore(&socket, session)?;
     Ok(socket)
 }
@@ -216,6 +222,34 @@ pub fn disconnect(session: &str) -> Result<()> {
         }
     } else if socket.exists() {
         fs::remove_file(&socket)?;
+    }
+    Ok(())
+}
+
+pub fn disconnect_account(email: &str) -> Result<()> {
+    let dir = crate::accounts::root()?.join("mux");
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("account") {
+            continue;
+        }
+        if fs::read_to_string(&path)?.trim() != email {
+            continue;
+        }
+        let socket = path.with_extension("sock");
+        let _guard = lock(&socket)?;
+        if alive(&socket) {
+            let status = base(&socket)
+                .args(["-O", "exit", "root@colab-runtime"])
+                .status()?;
+            if !status.success() {
+                bail!("Could not close shared connection for {email}");
+            }
+        }
+        fs::remove_file(path)?;
     }
     Ok(())
 }
